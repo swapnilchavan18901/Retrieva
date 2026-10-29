@@ -42,7 +42,7 @@ FileMind is a full-stack platform that lets users upload PDF documents, process 
 | Database     | PostgreSQL                                       |
 | Vector Store | Qdrant                                           |
 | Message Queue| RabbitMQ (aio-pika)                              |
-| LLM          | OpenAI GPT (chat) + text-embedding-3-small       |
+| LLM          | Sarvam AI (chat) + OpenAI embeddings via OpenRouter      |
 | File Storage | AWS S3 (presigned uploads)                       |
 | Auth         | JWT (bcrypt password hashing)                    |
 
@@ -53,7 +53,7 @@ FileMind is a full-stack platform that lets users upload PDF documents, process 
 - **Bot Builder** — Create multiple AI bots, each with a custom system prompt and isolated document knowledge base.
 - **PDF Upload & Processing** — Frontend uploads PDFs directly to S3 via presigned URLs; the consumer worker automatically chunks, embeds, and stores them in Qdrant.
 - **Embeddable Chat** — Share a bot ID + API key with anyone; they connect via Socket.IO from **their own website** and let their visitors chat with the bot.
-- **RAG Chat** — Each message retrieves relevant document chunks from Qdrant and generates context-aware answers using OpenAI.
+- **RAG Chat** — Each message retrieves relevant document chunks from Qdrant and generates context-aware answers using Sarvam AI.
 - **API Key Management** — Generate, list, and revoke API keys per bot to control external access.
 - **Chat Sessions** — Persistent conversation history with session management (start, resume, list).
 - **Subscription & Plans** — Built-in plan/subscription models for usage limits (bots, documents, requests, tokens).
@@ -86,8 +86,8 @@ The **Consumer** runs as an independent async process, listening to RabbitMQ:
 1. Picks up a job from `document_process_queue` (prefetch = 1).
 2. **Pulls the PDF from S3**, extracts text using `pypdf`.
 3. Splits text into overlapping chunks (1000 chars, 200 overlap).
-4. Generates embeddings via OpenAI `text-embedding-3-small` (batched).
-5. Upserts vectors into a Qdrant collection (one collection per bot).
+4. Generates 1536-dimensional `openai/text-embedding-3-small` embeddings through OpenRouter (batched).
+5. Upserts vectors into a Qdrant collection (one collection named by bot ID).
 6. Cleans up temp files.
 
 **Error Handling:**
@@ -97,7 +97,7 @@ The **Consumer** runs as an independent async process, listening to RabbitMQ:
 ```
 RabbitMQ → on_message()
   → Pull PDF from S3
-  → Extract text → Chunk → Embed with OpenAI
+  → Extract text → Chunk → Embed with OpenRouter
   → Upsert to Qdrant
   → ACK message
 ```
@@ -127,7 +127,7 @@ FileMind_Main/
 │   │   │   ├── producer.py      #   RabbitMQ job publisher
 │   │   │   └── rabbit_mq.py     #   RabbitMQ connection
 │   │   ├── llm/
-│   │   │   ├── llm.py           #   OpenAI chat completion
+│   │   │   ├── llm.py           #   Sarvam chat completion
 │   │   │   └── prompt/          #   System prompts
 │   │   ├── vector/              #   Qdrant retrieval (query-side)
 │   │   └── utils/               #   JWT, S3, password, API key utils
@@ -149,7 +149,8 @@ FileMind_Main/
 
 ## Environment Variables
 
-Create a `.env` file in the `FileMind/` directory:
+For a fresh setup, copy `FileMind/env.example` to `FileMind/.env` and replace the
+placeholder values. Both the backend and consumer use this file:
 
 ```env
 DATABASE_URL=postgresql://...          DIRECT_URL=postgresql://...
@@ -157,9 +158,47 @@ JWT_SECRET=your-jwt-secret             ACCESS_TOKEN_EXPIRE_MINUTES=1440
 AWS_REGION=us-east-1                   AWS_S3_BUCKET=your-bucket
 AWS_ACCESS_KEY_ID=...                  AWS_SECRET_ACCESS_KEY=...
 RABBIT_MQ_URL=amqp://...              RABBIT_MQ_API_KEY=...
-OPENAI_API_KEY=sk-...
+SARVAM_API_KEY=your-sarvam-api-key
+OPENROUTER_API_KEY=your-openrouter-api-key
+SARVAM_BASE_URL=https://api.sarvam.ai/v2
+SARVAM_MODEL=sarvam-105b
 QDRANT_DB_CLUSTER_URL=https://...      QDRANT_DB_API_KEY=...
 ```
+
+`SARVAM_API_KEY` is required by the backend for answers and query rewriting.
+The existing OpenAI SDK connects to Sarvam's OpenAI-compatible endpoint;
+chat requests are sent to Sarvam. No OpenAI key or credits are required.
+The `openai` Python dependency is only the compatible client for Sarvam chat.
+Both services read `FileMind/.env`, independent of the working directory.
+
+Document and query embeddings call `https://openrouter.ai/api/v1/embeddings`
+with `openai/text-embedding-3-small`, explicitly requesting 1536 dimensions.
+Set `OPENROUTER_API_KEY` in `FileMind/.env`; both the API and consumer require it.
+There is no model download, no local GPU requirement, and no direct OpenAI or
+Gemini key needed. Embedding requests consume your OpenRouter balance.
+
+The current listed embedding price is $0.02 per million input tokens (checked
+October 29, 2026). Indexing document chunks and embedding search queries both
+cost tokens. Re-indexing costs again; stored vectors can be searched repeatedly
+without re-embedding the documents. Sarvam chat and query rewriting are billed
+separately. See [OpenRouter pricing](https://openrouter.ai/openai/text-embedding-3-small).
+
+Original bot-ID collections generated with `text-embedding-3-small` at 1536
+dimensions are reused directly, with no migration or re-embedding charge.
+Gemini or BGE-M3 vectors cannot be reused with this model. If you have documents
+in a collection from one of those models, stop the API and pause uploads, then
+copy and re-embed that collection's chunks from the `FileMind/` directory:
+
+```bash
+python -m consumer.utils.reindex_embeddings --bot-id YOUR_BOT_UUID --source-collection OLD_COLLECTION
+```
+
+This optional command preserves source collections, chunk IDs, and metadata;
+it consumes OpenRouter embedding credits. It can be rerun after an interruption
+but resubmits embeddings, incurring their cost again. It rejects identical
+source and target collections to prevent needless re-embedding of original
+OpenAI vectors. Re-upload PDFs if no stored chunks remain. Resume the API once
+migration completes. Migration does not run automatically during startup.
 
 ---
 

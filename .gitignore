@@ -1,9 +1,38 @@
-# Keep environment variables out of version control
-.env
+# Environment files and local credentials (keep placeholder templates trackable)
+.env*
+*.env
+!.env.example
+!.env.*.example
+!env.example
+*.pem
+*.key
 
-generated/prisma
+# Python virtual environments
+.venv/
+venv/
+env/
 
-.venv
-consumer/.venv
-consumer/.env
-__pycache__
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# Coverage and build output
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+build/
+dist/
+*.egg-info/
+
+# Generated Prisma client (keep schema and migrations in Git)
+/generated/prisma/
+
+# Local logs and macOS files
+*.log
+.DS_Store

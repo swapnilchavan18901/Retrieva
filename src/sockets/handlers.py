@@ -2,8 +2,9 @@ from src.sockets.ws_chats import sio
 from src.db import prisma
 from src.utils.api_key import hash_api_key
 from src.vector.retrieve import retrieve_relevant_chunks
-from src.llm.llm import llm_api_call
+from src.llm.llm import llm_api_call, query_rewriter
 from src.llm.prompt.system_prompt import system_prompt
+import asyncio
 
 
 @sio.event
@@ -161,18 +162,21 @@ async def user_message(sid, data):
             "content": message,
         }
     )
-
-    # Retrieve relevant document chunks from vector store
-    try:
+         # Get bot for its system prompt
+    bot = await prisma.bot.find_unique(where={"id": bot_id})
+    bot_data = bot.model_dump()
+    if not bot_data:
+        return
+    query_rewriter_response = await query_rewriter(message)
+    llm_context = []
+    for query in query_rewriter_response["new_queries"]:
         context = await retrieve_relevant_chunks(
             collection_name=bot_id,
-            question=message,
+            question=query,
         )
-
-        # Get bot for its system prompt
-        bot = await prisma.bot.find_unique(where={"id": bot_id})
-        bot_data = bot.model_dump()
-
+        llm_context.append(context)
+    # Retrieve relevant document chunks from vector store
+    try:
         # Call the LLM
         response = await llm_api_call(
             system_prompt=system_prompt,

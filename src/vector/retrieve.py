@@ -1,16 +1,10 @@
 from src.vector.client import qdrant_client
-from openai import AsyncOpenAI
-from src.env import env
-
-openai_client = AsyncOpenAI(api_key=env.OPENAI_API_KEY)
+from shared.embeddings import collection_for_bot, embed_texts
+import asyncio
 
 
 async def embed_text(text: str) -> list[float]:
-    response = await openai_client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text
-    )
-    return response.data[0].embedding
+    return (await embed_texts([text]))[0]
 
 async def retrieve_relevant_chunks(
     collection_name: str,
@@ -21,9 +15,11 @@ async def retrieve_relevant_chunks(
     query_vector = await embed_text(question)
     
     # 2. Search Qdrant
-    results = qdrant_client.query_points(
-        collection_name=collection_name,
+    results = await asyncio.to_thread(
+        qdrant_client.query_points,
+        collection_name=collection_for_bot(collection_name),
         query=query_vector,
+        limit=top_k,
     )
 
     # 3. Extract only relevant data for AI

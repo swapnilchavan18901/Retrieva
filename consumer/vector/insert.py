@@ -2,14 +2,10 @@
 
 import uuid
 import asyncio
-from openai import AsyncOpenAI
 from qdrant_client.models import PointStruct
 from consumer.vector.qdrantdb import qdrant_client
-from consumer.consumer_env import env
 from consumer.vector.vector import ensure_collection
-
-# Initialize Async OpenAI client
-openai_client = AsyncOpenAI(api_key=env.OPENAI_API_KEY)
+from shared.embeddings import collection_for_bot, embed_texts
 
 # Text splitter configuration
 CHUNK_SIZE = 1000
@@ -81,32 +77,9 @@ def split_text_recursive(text: str, chunk_size: int = CHUNK_SIZE, chunk_overlap:
     return chunks
 
 
-async def embed_texts_async(texts: list[str], batch_size: int = 1000) -> list[list[float]]:
-    """
-    Async function to embed multiple texts using OpenAI API with batching.
-    Returns a list of embedding vectors.
-    
-    Batches requests to respect OpenAI's 300K token limit per request.
-    Each chunk is ~250 tokens (1000 chars / 4), so 1000 chunks = ~250K tokens (safe margin).
-    """
-    all_embeddings = []
-    
-    # Process in batches to avoid token limit
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        batch_num = (i // batch_size) + 1
-        total_batches = (len(texts) + batch_size - 1) // batch_size
-        
-        print(f"      Embedding batch {batch_num}/{total_batches} ({len(batch)} chunks)...")
-        
-        response = await openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=batch
-        )
-        batch_embeddings = [item.embedding for item in response.data]
-        all_embeddings.extend(batch_embeddings)
-    
-    return all_embeddings
+async def embed_texts_async(texts: list[str], batch_size: int = 32) -> list[list[float]]:
+    """Embed document chunks through OpenRouter with the model shared with queries."""
+    return await embed_texts(texts, batch_size=batch_size)
 
 async def _embed_and_store_async(
     docs,
@@ -117,7 +90,7 @@ async def _embed_and_store_async(
 ):
     """Async helper for embedding and storing"""
     # Get collection name based on bot_id
-    collection_name = bot_id
+    collection_name = collection_for_bot(bot_id)
     
     # Don't print the entire document list - it's too long
     print(f"📚 Processing {len(docs)} pages from '{file_name}' for bot '{bot_id}'")
