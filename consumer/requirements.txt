@@ -2,7 +2,7 @@
 httpx>=0.28.1,<1.0
 
 # PDF processing
-pypdf>=3.0.0
+pypdf>=5.0.0
 
 # Vector database
 qdrant-client>=1.16.2

@@ -85,7 +85,7 @@ The **Consumer** runs as an independent async process, listening to RabbitMQ:
 
 1. Picks up a job from `document_process_queue` (prefetch = 1).
 2. **Pulls the PDF from S3**, extracts text using `pypdf`.
-3. Splits text into overlapping chunks (1000 chars, 200 overlap).
+3. Splits text at paragraph and recognized-heading boundaries (up to 1000 characters), reusing unchanged chunks when a document is updated.
 4. Generates 1536-dimensional `openai/text-embedding-3-small` embeddings through OpenRouter (batched).
 5. Upserts vectors into a Qdrant collection (one collection named by bot ID).
 6. Cleans up temp files.
