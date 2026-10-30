@@ -5,10 +5,13 @@ from src.llm.prompt.query_rewriter_prompt import query_rewriter_prompt
 import json
 from time import perf_counter
 from shared.benchmark import record_provider_call
+from src.sockets.limits import MAX_OUTPUT_TOKENS
 
 client = AsyncOpenAI(
     api_key=env.SARVAM_API_KEY,
     base_url=env.SARVAM_BASE_URL,
+    max_retries=0,
+    timeout=60.0,
 )
 
 async def _complete(operation: str, **kwargs):
@@ -34,7 +37,7 @@ async def _complete(operation: str, **kwargs):
     return response
 
 
-async def llm_api_call(system_prompt: str, bot_prompt: str | None, user_prompt: str, context: list[dict], history: list[dict] | None = None, on_delta=None) -> dict:
+async def llm_api_call(system_prompt: str, bot_prompt: str | None, user_prompt: str, context: list[dict], history: list[dict] | None = None, on_delta=None, max_tokens=MAX_OUTPUT_TOKENS) -> dict:
     """
     Make an API call to Sarvam with system and user prompts.
 
@@ -74,7 +77,7 @@ async def llm_api_call(system_prompt: str, bot_prompt: str | None, user_prompt: 
             messages=[{"role": "system", "content": final_prompt}, *conversation,
                       {"role": "user", "content": user_prompt}],
             reasoning_effort="none",
-            max_tokens=768,
+            max_tokens=min(MAX_OUTPUT_TOKENS, max(1, max_tokens)),
         )
         if on_delta is not None:
             response = await _stream_complete(on_delta=on_delta, **options)

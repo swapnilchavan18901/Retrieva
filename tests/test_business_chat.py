@@ -143,6 +143,9 @@ class BusinessSocketTests(unittest.IsolatedAsyncioTestCase):
         modules.start()
         self.addCleanup(modules.stop)
         self.handlers = importlib.reload(importlib.import_module('src.sockets.handlers'))
+        from src.sockets.limits import Admission
+        self.guard = ns(acquire=AsyncMock(return_value=Admission('reservation', 768)), finish=AsyncMock())
+        self.handlers.limits = self.guard
 
     async def test_followups_use_history_and_all_retrieval_results_without_sending_sources(self):
         await self.handlers.user_message('socket', {'content': 'And Sunday?'})
@@ -199,6 +202,23 @@ class BusinessSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(events[-1].args[1]['done'])
         self.assertIn('server_ttft_ms', self.benchmark_events[-1])
         self.assertEqual(self.db.chatmessage.create.await_count, 2)
+
+    async def test_denied_request_never_retrieves_or_calls_provider(self):
+        from src.sockets.limits import LimitDenied
+        self.guard.acquire.side_effect = LimitDenied('daily_token_limit', 'Daily limit reached.', 60)
+        await self.handlers.user_message('socket', {'content': 'Hello', 'stream': True})
+        self.retrieve.assert_not_awaited()
+        self.answer.assert_not_awaited()
+        self.db.chatmessage.create.assert_not_awaited()
+        self.assertEqual(self.sio.emit.await_args.args[0], 'chat_error')
+        self.assertEqual(self.sio.emit.await_args.args[1]['retryAfter'], 60)
+        self.assertEqual(self.benchmark_events[-1]['outcome'], 'rejected')
+
+    async def test_oversized_message_never_acquires_or_calls_provider(self):
+        await self.handlers.user_message('socket', {'content': 'x' * 4001})
+        self.guard.acquire.assert_not_awaited()
+        self.answer.assert_not_awaited()
+        self.assertEqual(self.sio.emit.await_args.args[1]['code'], 'message_too_long')
 
     async def test_interrupted_stream_preserves_partial_reply_and_finishes_client_message(self):
         async def answer(**kwargs):

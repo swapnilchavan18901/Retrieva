@@ -1,19 +1,51 @@
+from socketio.exceptions import ConnectionRefusedError
 from src.sockets.ws_chats import sio
 from src.db import prisma
 from src.utils.api_key import hash_api_key
 from src.vector.retrieve import retrieve_relevant_chunks
 from src.llm.llm import llm_api_call
 from src.llm.prompt.system_prompt import system_prompt
+import asyncio
 from time import perf_counter
+from src.sockets.limits import ChatLimits, LimitDenied, ip_hash, validate_message, REPLY_TIMEOUT_SECONDS
 from shared.benchmark import benchmark_run
+
+
+limits = ChatLimits(prisma)
+_connection_tasks = {}
+
+
+async def _renew_connection(sid):
+    try:
+        while True:
+            await asyncio.sleep(30)
+            if not await limits.renew(sid):
+                break
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        pass
+    await sio.disconnect(sid)
+
+
+async def reject(sid, error):
+    await sio.emit("chat_error", error.payload(), to=sid)
 
 
 @sio.event
 async def connect(sid, environ, auth):
-    print(f"connect: {sid}")
+    address = ip_hash(environ)
+    try:
+        await limits.connection_attempt(address)
+    except LimitDenied as error:
+        raise ConnectionRefusedError(error.message, error.payload())
+    except Exception:
+        return False  # Fail closed if shared enforcement is unavailable.
+    if not isinstance(auth, dict):
+        return False
     api_key = auth.get("apiKey")
     bot_id = auth.get("botId")
-    if not api_key or not bot_id:
+    if not isinstance(api_key, str) or not isinstance(bot_id, str) or len(api_key) > 256 or len(bot_id) > 100 or not api_key or not bot_id:
         print("api_key or bot_id is not found")
         return False  # reject connection
 
@@ -33,11 +65,19 @@ async def connect(sid, environ, auth):
     if not bot or not bot.isActive:
         return False
 
+    try:
+        await limits.connect(sid, bot.id, api_key_obj.id, address)
+    except LimitDenied as error:
+        raise ConnectionRefusedError(error.message, error.payload())
+    except Exception:
+        return False
     # store context on socket
     await sio.save_session(sid, {
         "botId": bot.id,
         "apiKeyId": api_key_obj.id,
+        "ipHash": address,
     })
+    _connection_tasks[sid] = asyncio.create_task(_renew_connection(sid))
 
     print(f"Socket connected: {sid}")
 
@@ -46,7 +86,7 @@ async def connect(sid, environ, auth):
 async def start_chat(sid, data):
     try:
         session = await sio.get_session(sid)
-        print(f"start_chat: {sid}, session: {session}")
+        await limits.control(session)
 
         # 0️⃣ Leave old room if any
         old_room = session.get("room")
@@ -94,18 +134,26 @@ async def start_chat(sid, data):
             to=sid,
         )
         print(f"chat_started emitted for session: {chat_session.id}")
+    except LimitDenied as error:
+        await reject(sid, error)
     except Exception as e:
-        print(f"start_chat ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        await sio.emit("error", {"message": str(e)}, to=sid)
+        print(f"start_chat ERROR: {type(e).__name__}")
+        await reject(sid, LimitDenied("unavailable", "Unable to start chat. Please try again.", 5))
 
 
 @sio.event
 async def resume_chat(sid, data):
     """Resume an existing chat session (when user clicks a conversation in sidebar)."""
     session = await sio.get_session(sid)
-    session_id = data.get("sessionId")
+    try:
+        await limits.control(session)
+    except LimitDenied as error:
+        await reject(sid, error)
+        return
+    except Exception:
+        await reject(sid, LimitDenied("unavailable", "Chat is temporarily unavailable.", 5))
+        return
+    session_id = data.get("sessionId") if isinstance(data, dict) else None
 
     if not session_id:
         await sio.emit("error", {"message": "sessionId is required"}, to=sid)
@@ -116,7 +164,7 @@ async def resume_chat(sid, data):
         where={"id": session_id}
     )
 
-    if not chat_session or chat_session.botId != session["botId"]:
+    if not chat_session or chat_session.botId != session["botId"] or chat_session.apiKeyId != session["apiKeyId"]:
         await sio.emit("error", {"message": "Invalid session"}, to=sid)
         return
 
@@ -146,15 +194,39 @@ async def resume_chat(sid, data):
 
 @sio.event
 async def user_message(sid, data):
-    if not data.get("content"):
-        return
+    admission = None
     with benchmark_run("chat_turn") as benchmark:
         benchmark.started_at = perf_counter()
-        await _respond_to_message(sid, data, benchmark)
+        try:
+            validate_message(data)
+            session = await sio.get_session(sid)
+            if not session.get("sessionId") or not session.get("room"):
+                raise LimitDenied("chat_required", "Please start a chat first.", 0)
+            with benchmark.stage("admission"):
+                admission = await limits.acquire(session)
+            benchmark.metrics["reserved_output_tokens"] = admission.max_tokens
+            async with asyncio.timeout(REPLY_TIMEOUT_SECONDS):
+                await _respond_to_message(sid, data, benchmark, admission.max_tokens, session)
+        except LimitDenied as error:
+            benchmark.failed(error, outcome="rejected")
+            benchmark.metrics["rejection_code"] = error.code
+            await reject(sid, error)
+        except Exception as error:
+            benchmark.failed(error)
+            await reject(sid, LimitDenied("unavailable", "Chat is temporarily unavailable. Please try again.", 5))
+        finally:
+            if admission is not None:
+                calls = [call for call in benchmark.calls if call["provider"] == "sarvam"]
+                # Missing final usage remains charged at the full reservation.
+                reported = [call["usage"]["completion_tokens"] for call in calls]
+                output = sum(reported) if all(value is not None for value in reported) else None
+                try:
+                    await asyncio.shield(limits.finish(admission, output))
+                except Exception as error:
+                    benchmark.metrics["quota_settlement_error"] = type(error).__name__
 
 
-async def _respond_to_message(sid, data, benchmark):
-    session = await sio.get_session(sid)
+async def _respond_to_message(sid, data, benchmark, max_tokens, session):
     room = session["room"]
     bot_id = session["botId"]
     benchmark.identifiers.update(bot_id=bot_id, session_id=session["sessionId"])
@@ -198,7 +270,7 @@ async def _respond_to_message(sid, data, benchmark):
                 benchmark.metrics["server_ttft_ms"] = round((perf_counter() - benchmark.started_at) * 1000, 3)
         with benchmark.stage("answer_generation"):
             options = dict(system_prompt=system_prompt, bot_prompt=bot.systemPrompt,
-                           context=context, user_prompt=message, history=history)
+                           context=context, user_prompt=message, history=history, max_tokens=max_tokens)
             # Older integrations still receive the original complete-message event.
             if streamed:
                 options["on_delta"] = send_delta
@@ -229,5 +301,11 @@ async def _respond_to_message(sid, data, benchmark):
 
 
 @sio.event
-async def disconnect(sid):
-    print(f"Socket disconnected: {sid}")
+async def disconnect(sid, reason=None):
+    task = _connection_tasks.pop(sid, None)
+    if task and task is not asyncio.current_task():
+        task.cancel()
+    try:
+        await limits.disconnect(sid)
+    except Exception:
+        pass  # Lease expires even if the process/database is unavailable.

@@ -209,3 +209,24 @@ model Subscription {
   startedAt   DateTime
   endsAt      DateTime?
 }
+
+// Shared abuse controls. Operations use raw SQL under a transaction advisory lock.
+model ChatLimitCounter {
+  key       String   @id
+  value     Int      @default(0)
+  expiresAt DateTime
+  @@index([expiresAt])
+}
+
+model ChatLimitLease {
+  id             String   @id
+  kind           String
+  botId          String
+  apiKeyId       String
+  sessionId      String
+  ipHash         String
+  expiresAt      DateTime
+  dayKey         String?
+  reservedTokens Int      @default(0)
+  @@index([kind, expiresAt])
+}

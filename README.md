@@ -438,3 +438,94 @@ collection/index checks), `query_embedding` (OpenRouter), and `qdrant_search`
 (the vector query). These are parts of the parent `retrieval` stage; do not add
 both parent and child stages together. A fresh-process live check measured
 0.275s preparation, 1.747s embedding, and 0.282s Qdrant search.
+
+### Chat rate limits and daily output allowance
+
+The daily output allowance is the hard constant `DAILY_OUTPUT_TOKEN_LIMIT =
+50_000` in `src/sockets/limits.py`, per bot across every key and visitor. A day
+resets at midnight **Asia/Kolkata**. It counts provider-reported completion
+(output) tokens. Input tokens and embeddings have separate costs; this output
+allowance is not a total spending cap.
+
+Current limits:
+
+| Control | Allowance |
+| --- | --- |
+| Output tokens per bot per India calendar day | 50,000 |
+| Output per reply | Up to 768, reduced to the remaining daily allowance |
+| Messages per chat session | 10/minute |
+| Messages per verified client IP | 20/minute |
+| Messages per API key | 60/minute |
+| Messages per bot across keys | 120/minute |
+| Active replies per chat session / IP / bot / whole backend | 1 / 2 / 5 / 20 |
+| Connection attempts per IP, including failed authentication | 20/minute |
+| Open sockets per IP / key / whole backend | 5 / 100 / 500 |
+| Start/resume operations per IP / key | 20 / 60 per minute |
+| User message length | 4,000 characters |
+| Socket.IO packet size | 32 KiB |
+| Maximum complete reply operation | 90 seconds |
+
+Minute limits use fixed windows, so bursts can cross minute boundaries. IP
+limits are shared by visitors on the same network. Connection attempts are
+limited at Socket.IO authentication; also configure your ingress/reverse proxy
+for transport-level request floods. Configure Uvicorn's trusted proxy addresses
+explicitly when deployed behind a proxy. The app ignores arbitrary forwarded
+headers and uses the server-verified ASGI client address.
+
+PostgreSQL counters and atomic reservations work across processes and restarts;
+Redis is not required. Admission is one database round trip using a small
+transaction-locked database function, with no provider requests while holding the
+lock. Every message rechecks the API key, active bot, and chat's key ownership.
+Revoked keys cannot continue generating on an existing socket. Switching keys
+cannot bypass the shared bot quota. The old unmetered `/testing/{bot_id}` endpoint
+now returns HTTP 410 and makes no provider call.
+
+An admitted request reserves its maximum output count before any embedding or
+LLM call. Completion releases the unused portion using the provider's reported
+usage, not a local tokenizer. Failed/interrupted LLM calls with no reported usage
+keep their full reservation charged; failures before an LLM call refund it.
+Expired/crashed requests release their concurrency slot after 150 seconds but
+keep their token reservation charged. Reservations spanning midnight settle
+against their original day. SDK automatic retries are disabled to prevent hidden
+additional generation calls. If the database cannot enforce admission, the chat
+rejects the request rather than making an unmetered provider call.
+
+Connections renew a 90-second lease every 30 seconds, and disconnect releases
+the lease. Unexpected process termination therefore does not permanently consume
+connection slots. A failed renewal disconnects the client. Generations have a
+longer lease than their 90-second timeout.
+
+Rejected operations emit `chat_error` to the requesting socket:
+
+```json
+{"code":"rate_limited","message":"Too many requests. Please wait and try again.","retryAfter":25}
+```
+
+Other codes include `daily_token_limit`, `reply_in_progress`, `busy`,
+`connection_limit`, `message_too_long`, `unauthorized`, and `unavailable`.
+Connection refusals carry the same error details through Socket.IO
+`connect_error`. The frontend exits its waiting state and displays an error;
+rate-limit messages are not saved as assistant replies. Benchmark summaries log
+`outcome: "rejected"` and `rejection_code` without paid provider calls. Active
+replies log `reserved_output_tokens`; a failed final settlement logs
+`quota_settlement_error` and leaves the reservation charged.
+
+For another installation, apply the migration before restarting the API:
+
+```bash
+python -m prisma migrate deploy
+python -m prisma generate
+```
+
+The database login must own the internal limit tables/function (the usual same
+migration/application login), or receive explicit privileges. The new tables
+have row-level security enabled and the admission function is not publicly
+executable. They are internal accounting data, not public APIs.
+
+Database concurrency tests are opt-in and run only against a disposable local
+PostgreSQL on port 55433. Apply all migrations there first, then run:
+
+```bash
+FILEMIND_LIMIT_TEST_DATABASE_URL='postgresql://postgres:local-test-only@127.0.0.1:55433/filemind_limits_clean' \
+  python -m unittest discover -s tests
+```

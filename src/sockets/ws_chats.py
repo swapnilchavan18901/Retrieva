@@ -2,6 +2,7 @@ import socketio
 
 sio = socketio.AsyncServer(
     async_mode="asgi",
+    max_http_buffer_size=32_768,
     cors_allowed_origins="*",
 )
 
