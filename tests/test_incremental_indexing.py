@@ -4,6 +4,7 @@ import sys
 import types
 import unittest
 from unittest.mock import AsyncMock, patch
+from shared import benchmark
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
@@ -34,6 +35,9 @@ class StructureChunkingTests(unittest.TestCase):
 
 class IncrementalIndexingTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        benchmark_patch = patch.object(benchmark, "emit_event")
+        benchmark_patch.start()
+        self.addCleanup(benchmark_patch.stop)
         self.db = QdrantClient(':memory:')
         self.documents = []
         self.prisma = types.SimpleNamespace(document=types.SimpleNamespace(find_many=AsyncMock(side_effect=lambda **kwargs: self.documents)))

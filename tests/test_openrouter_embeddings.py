@@ -7,6 +7,7 @@ import types
 import unittest
 import uuid
 from unittest.mock import AsyncMock, patch
+from shared import benchmark
 
 import httpx
 from qdrant_client import QdrantClient
@@ -17,6 +18,10 @@ from shared import embeddings
 
 class OpenRouterEmbeddingsTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.benchmark_events = []
+        benchmark_patch = patch.object(benchmark, "emit_event", side_effect=self.benchmark_events.append)
+        benchmark_patch.start()
+        self.addCleanup(benchmark_patch.stop)
         self.db = QdrantClient(":memory:")
         self.documents = []
         self.fake_prisma = types.SimpleNamespace(document=types.SimpleNamespace(find_many=AsyncMock(side_effect=lambda **kwargs: self.documents)))
@@ -35,6 +40,7 @@ class OpenRouterEmbeddingsTests(unittest.IsolatedAsyncioTestCase):
         self.calls = []
         self.statuses = []
         self.response_body = None
+        self.response_usage = None
         original_client = httpx.AsyncClient
 
         def handle(request):
@@ -49,7 +55,10 @@ class OpenRouterEmbeddingsTests(unittest.IsolatedAsyncioTestCase):
                 vector = [0.0] * embeddings.VECTOR_SIZE
                 vector[0 if "apple" in text else 1] = 2.0
                 vectors.append({"index": index, "embedding": vector})
-            return httpx.Response(200, json={"data": list(reversed(vectors))})
+            result = {"data": list(reversed(vectors))}
+            if self.response_usage is not None:
+                result["usage"] = self.response_usage
+            return httpx.Response(200, json=result)
 
         def make_client(**kwargs):
             return original_client(transport=httpx.MockTransport(handle), **kwargs)
@@ -171,6 +180,25 @@ class OpenRouterEmbeddingsTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(httpx.HTTPStatusError):
                 await embeddings.embed_texts(["apple"])
             self.assertEqual(len(self.calls) - before, 1)
+
+    async def test_embedding_usage_and_cost_are_provider_reported(self):
+        self.response_usage = {"prompt_tokens": 123, "total_tokens": 123, "cost": 0.00000246}
+        await embeddings.embed_texts(["apple", "orange"])
+        event = self.benchmark_events[-1]
+        self.assertEqual(event["provider"], "openrouter")
+        self.assertEqual(event["usage"]["prompt_tokens"], 123)
+        self.assertEqual(event["reported_cost"]["amount"], "0.00000246")
+        self.assertEqual(event["batch_size"], 2)
+        self.assertNotIn("test-openrouter-key", json.dumps(event))
+        self.assertNotIn("apple", json.dumps(event))
+
+    async def test_retry_attempts_are_logged_once_each(self):
+        self.statuses = [429, 503, 200]
+        with patch.object(embeddings.asyncio, "sleep", new_callable=AsyncMock):
+            await embeddings.embed_texts(["apple"])
+        self.assertEqual([event["attempt"] for event in self.benchmark_events], [1, 2, 3])
+        self.assertEqual([event["http_status"] for event in self.benchmark_events], [429, 503, 200])
+        self.assertEqual([event["status"] for event in self.benchmark_events], ["retryable_error", "retryable_error", "success"])
 
     async def test_invalid_api_responses_and_inputs(self):
         for data in [

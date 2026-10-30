@@ -8,6 +8,7 @@ import unittest
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
+from shared import benchmark
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,6 +20,9 @@ def ns(**kwargs):
 
 class DocumentAPITests(unittest.TestCase):
     def setUp(self):
+        benchmark_patch = patch.object(benchmark, "emit_event")
+        benchmark_patch.start()
+        self.addCleanup(benchmark_patch.stop)
         self.db = ns(bot=ns(find_unique=AsyncMock(return_value=ns(id='bot', userId='user'))),
             document=ns(find_unique=AsyncMock(return_value=ns(id='doc', botId='bot', bot=ns(userId='user'), status='ready')),
                         create=AsyncMock(), find_many=AsyncMock(return_value=[])),
@@ -97,6 +101,9 @@ class DocumentAPITests(unittest.TestCase):
 
 class DocumentWorkerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        benchmark_patch = patch.object(benchmark, "emit_event")
+        benchmark_patch.start()
+        self.addCleanup(benchmark_patch.stop)
         self.events = []
         now = datetime.now(timezone.utc)
         self.doc = ns(id='doc', botId='bot', bot=ns(userId='user'), activeRevision='v1',

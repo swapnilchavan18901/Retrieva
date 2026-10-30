@@ -2,6 +2,8 @@
 
 import asyncio
 import math
+from time import perf_counter
+from shared.benchmark import record_provider_call
 from functools import lru_cache
 from pathlib import Path
 
@@ -79,12 +81,41 @@ async def embed_texts(
                 "encoding_format": "float",
             }
             for attempt in range(3):
-                response = await client.post(
-                    EMBEDDING_URL, headers={"Authorization": f"Bearer {_api_key()}"}, json=body,
-                )
-                if response.status_code not in {429, 500, 502, 503, 504} or attempt == 2:
-                    response.raise_for_status()
-                    break
-                await asyncio.sleep(2 ** attempt)
-            vectors.extend(_normalized_vectors(response.json(), len(batch)))
+                started = perf_counter()
+                response, data = None, {}
+                retry = False
+                try:
+                    response = await client.post(
+                        EMBEDDING_URL, headers={"Authorization": f"Bearer {_api_key()}"}, json=body,
+                    )
+                    try:
+                        data = response.json()
+                    except ValueError:
+                        data = {}
+                    if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
+                        record_provider_call(provider="openrouter", operation="embedding", model=EMBEDDING_MODEL,
+                            duration_ms=(perf_counter() - started) * 1000, data=data, status="retryable_error",
+                            http_status=response.status_code, attempt=attempt + 1, batch_size=len(batch),
+                            provider_request_id=response.headers.get("x-request-id"))
+                        retry = True
+                    else:
+                        response.raise_for_status()
+                        batch_vectors = _normalized_vectors(data, len(batch))
+                except BaseException as error:
+                    record_provider_call(provider="openrouter", operation="embedding", model=EMBEDDING_MODEL,
+                        duration_ms=(perf_counter() - started) * 1000, data=data,
+                        status="cancelled" if type(error).__name__ == "CancelledError" else "error",
+                        error_type=type(error).__name__, http_status=response.status_code if response is not None else None,
+                        attempt=attempt + 1, batch_size=len(batch),
+                        provider_request_id=response.headers.get("x-request-id") if response is not None else None)
+                    raise
+                if retry:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                record_provider_call(provider="openrouter", operation="embedding", model=EMBEDDING_MODEL,
+                    duration_ms=(perf_counter() - started) * 1000, data=data, http_status=response.status_code,
+                    attempt=attempt + 1, batch_size=len(batch), provider_request_id=response.headers.get("x-request-id"))
+                vectors.extend(batch_vectors)
+                break
+
     return vectors

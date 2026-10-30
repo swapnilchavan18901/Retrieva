@@ -34,5 +34,6 @@ dist/
 /generated/prisma/
 
 # Local logs and macOS files
+/logs/
 *.log
 .DS_Store

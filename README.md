@@ -327,3 +327,114 @@ Offline checks (no AWS/RabbitMQ/OpenRouter credentials or spending required):
 ```bash
 python -m unittest discover -s tests
 ```
+
+## Token, cost, and latency benchmarking
+
+The API and document worker emit JSON benchmark records to the terminal and
+`FileMind/logs/benchmarks-<process-id>.jsonl`. Files rotate at 10 MiB with five
+backups per process and are excluded from Git. No prompts, replies, document text,
+API keys, or raw provider error bodies are included in these records.
+
+- `provider_call`: Sarvam `query_rewrite` and `answer` calls, plus each OpenRouter
+  embedding batch/attempt. Records include provider completion/request IDs,
+  model, reported input/output/total/cached/reasoning tokens, duration in
+  milliseconds, and cost fields. Sarvam SDK call duration includes its automatic
+  retries, but usage covers only the returned response. Unobserved retry usage
+  cannot be inferred. OpenRouter retry attempts are logged individually.
+- `benchmark_summary`: one record per chat turn or document indexing job.
+  `trace_id` links its provider calls to the summary. Chat summaries include
+  session/bot/message IDs, rewrite/retrieval/answer/database-delivery stage times,
+  total server time, observed provider token/cost sums, and success/fallback/error
+  outcomes. Parallel retrieval calls share the trace; their durations overlap.
+
+**Tokens come directly from provider `usage` fields.** There is no local tokenizer,
+word-count heuristic, or text-length estimate. Missing fields stay `null`.
+Summary fields named `reported_*` sum only observed counters; check
+`usage_complete`, `usage_missing_calls`, and `usage_incomplete_calls` before using
+those sums as complete billing totals. Reasoning tokens are already included in
+reported completion tokens and are never charged twice by the estimate.
+
+Sarvam's documented completion response reports tokens, not a final rupee charge.
+`estimated_cost` is therefore explicitly an INR estimate, excluding tax, using
+reported tokens and configurable prices. Defaults for `sarvam-105b` and
+`sarvam-105b-conversations` are ₹15 input / ₹5 cached input / ₹60 output per
+million tokens, checked on 2026-10-30 against
+[Sarvam pricing](https://docs.sarvam.ai/api/getting-started/pricing).
+If cached usage is absent, the record says `cache_assumption=all_input_uncached`;
+this is not a provider-reported zero cache count. Unknown models/missing required
+usage produce no estimate. For OpenRouter, `reported_cost` preserves `usage.cost`
+in USD when returned; missing cost is not manufactured. INR and USD are never
+combined into one monetary total. Your provider dashboard/invoice remains the
+source of truth for billed charges and plan-specific rates.
+
+Optional settings in `FileMind/.env` (restart the API and worker after changing):
+
+```env
+BENCHMARK_ENABLED=true
+BENCHMARK_LOG_TO_CONSOLE=true
+BENCHMARK_LOG_PATH=logs/benchmarks-{pid}.jsonl
+SARVAM_PRICING_MODEL=sarvam-105b
+SARVAM_INPUT_PRICE_PER_1M_TOKENS=15
+SARVAM_CACHED_INPUT_PRICE_PER_1M_TOKENS=5
+SARVAM_OUTPUT_PRICE_PER_1M_TOKENS=60
+```
+
+Use your account's actual rates if different. Set `BENCHMARK_LOG_PATH=` to disable
+file output, or `BENCHMARK_ENABLED=false` to disable benchmark output entirely.
+
+```bash
+# From FileMind/, after making some requests:
+tail -f logs/benchmarks-*.jsonl
+
+# With jq installed, inspect one process's chat summaries:
+jq 'select(.event == "benchmark_summary" and .operation == "chat_turn") |
+    {trace_id, outcome, server_total_ms, stages_ms, providers}' logs/benchmarks-12345.jsonl
+```
+
+`server_total_ms` ends after saving/emitting the answer; it excludes browser
+network delivery/rendering. Provider durations include request/response overhead.
+`effective_output_tokens_per_second` uses reported completion tokens divided by
+whole call duration; it is not isolated model decoding speed. This non-streaming
+chat flow does not measure time to first token. Benchmark instrumentation does
+not make additional provider requests or spend credits by itself.
+
+### Low-latency streaming chat
+
+The chat path now uses one embedding search (the question plus the last two user
+questions for follow-ups), followed by one Sarvam answer call. It no longer waits
+for the four-query LLM rewrite. Revision filtering still runs against current
+stored document revisions on every search. Collection index setup is reused
+within each backend process. Answers use `reasoning_effort="none"` and an output
+limit of 768 tokens. This favors ordinary customer questions; evaluate retrieval
+quality with your own questions, especially topic changes and complex questions.
+
+The frontend sends `user_message` with `{content, stream: true}`. Integrations
+opting into streaming should append `assistant_delta.content`, grouped by
+`sessionId` and `messageId`. The final `assistant_message` has `done: true` and
+the complete content: replace the partial reply with it rather than appending a
+second message. Clients omitting `stream` keep the complete-message protocol.
+Only visible answer content is streamed; reasoning is never sent to clients.
+If a stream fails after partial output, the final reply preserves the partial
+text and adds an interruption notice. Final provider usage is logged when
+available; interrupted streams may have unknown usage.
+
+`provider_ttft_ms` measures the Sarvam call until its first visible answer text.
+`server_ttft_ms` on a streaming `chat_turn` summary measures from receiving the
+question until emitting its first answer text, including search and database
+work. Neither measures browser delivery or rendering. Total generation time is
+still logged separately. Streaming usage comes from the provider's final usage
+chunk, never a local token count.
+
+A small live check on 2026-10-30 using one indexed bot, five retrieved chunks and
+the same synthetic question three times measured search-plus-answer first text
+at 2.565s, 1.862s and 2.180s, with zero reasoning tokens. These checks excluded
+Socket.IO delivery, chat-history reads and message persistence, and are not a
+production percentile or a latency guarantee. Restart the backend and reload
+the frontend, then measure `server_ttft_ms` on representative real chats to
+validate the 3–4 second target under actual load.
+
+Search timing fields are also separated: `retrieval_prepare` (database and
+collection/index checks), `query_embedding` (OpenRouter), and `qdrant_search`
+(the vector query). These are parts of the parent `retrieval` stage; do not add
+both parent and child stages together. A fresh-process live check measured
+0.275s preparation, 1.747s embedding, and 0.282s Qdrant search.

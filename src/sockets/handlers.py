@@ -2,9 +2,10 @@ from src.sockets.ws_chats import sio
 from src.db import prisma
 from src.utils.api_key import hash_api_key
 from src.vector.retrieve import retrieve_relevant_chunks
-from src.llm.llm import llm_api_call, query_rewriter
+from src.llm.llm import llm_api_call
 from src.llm.prompt.system_prompt import system_prompt
-import asyncio
+from time import perf_counter
+from shared.benchmark import benchmark_run
 
 
 @sio.event
@@ -145,62 +146,86 @@ async def resume_chat(sid, data):
 
 @sio.event
 async def user_message(sid, data):
+    if not data.get("content"):
+        return
+    with benchmark_run("chat_turn") as benchmark:
+        benchmark.started_at = perf_counter()
+        await _respond_to_message(sid, data, benchmark)
+
+
+async def _respond_to_message(sid, data, benchmark):
     session = await sio.get_session(sid)
     room = session["room"]
     bot_id = session["botId"]
+    benchmark.identifiers.update(bot_id=bot_id, session_id=session["sessionId"])
 
     message = data.get("content")
     if not message:
         return
 
-    user_record = await prisma.chatmessage.create(
-        data={"sessionId": session["sessionId"], "role": "user", "content": message}
-    )
-    try:
-        previous = await prisma.chatmessage.find_many(
-            where={"sessionId": session["sessionId"], "id": {"not": user_record.id},
-                   "role": {"in": ["user", "assistant"]}},
-            order={"createdAt": "desc"}, take=12,
+    with benchmark.stage("save_user_message"):
+        user_record = await prisma.chatmessage.create(
+            data={"sessionId": session["sessionId"], "role": "user", "content": message}
         )
-        history = [{"role": str(item.role.value if hasattr(item.role, "value") else item.role),
-                    "content": item.content} for item in reversed(previous)]
-        bot = await prisma.bot.find_unique(where={"id": bot_id})
+    benchmark.identifiers["message_id"] = user_record.id
+    partial = []
+    try:
+        with benchmark.stage("conversation_lookup"):
+            previous = await prisma.chatmessage.find_many(
+                where={"sessionId": session["sessionId"], "id": {"not": user_record.id},
+                       "role": {"in": ["user", "assistant"]}},
+                order={"createdAt": "desc"}, take=12,
+            )
+            history = [{"role": str(item.role.value if hasattr(item.role, "value") else item.role),
+                        "content": item.content} for item in reversed(previous)]
+            bot = await prisma.bot.find_unique(where={"id": bot_id})
         if not bot or not bot.isActive:
             raise ValueError("Assistant unavailable")
-        # Keep follow-up searches in context and combine all results, not just the last query.
-        rewritten = await query_rewriter(message, history=history)
-        contexts = await asyncio.gather(*[
-            retrieve_relevant_chunks(collection_name=bot_id, question=query)
-            for query in rewritten["new_queries"]
-        ])
-        context, seen = [], set()
-        for group in contexts:
-            for chunk in group:
-                text = chunk.get("text")
-                if text and text not in seen:
-                    seen.add(text)
-                    context.append(chunk)
-        response = await llm_api_call(system_prompt=system_prompt, bot_prompt=bot.systemPrompt,
-                                      context=context, user_prompt=message, history=history)
+        # One embedding search avoids a slow generation call before the answer.
+        # Prior user questions preserve the topic for short follow-up questions.
+        prior_questions = [item["content"][:500] for item in history if item["role"] == "user"][-2:]
+        search_question = "\n".join([*prior_questions, message])
+        with benchmark.stage("retrieval"):
+            context = await retrieve_relevant_chunks(collection_name=bot_id, question=search_question)
+        streamed = bool(data.get("stream"))
+        async def send_delta(content):
+            partial.append(content)
+            await sio.emit("assistant_delta", {
+                "content": content, "messageId": user_record.id,
+                "sessionId": session["sessionId"],
+            }, to=room)
+            if "server_ttft_ms" not in benchmark.metrics:
+                benchmark.metrics["server_ttft_ms"] = round((perf_counter() - benchmark.started_at) * 1000, 3)
+        with benchmark.stage("answer_generation"):
+            options = dict(system_prompt=system_prompt, bot_prompt=bot.systemPrompt,
+                           context=context, user_prompt=message, history=history)
+            # Older integrations still receive the original complete-message event.
+            if streamed:
+                options["on_delta"] = send_delta
+            response = await llm_api_call(**options)
         reply = response.get("choices", [{}])[0].get("message", {}).get("content")
         if not reply:
+            benchmark.failed(ValueError("Empty assistant response"), outcome="fallback")
             reply = "Sorry, I couldn't respond just now. Please try again."
     except Exception as e:
+        benchmark.failed(e, outcome="fallback")
         print(f"Chat response error: {type(e).__name__}")
-        reply = "Sorry, I couldn't respond just now. Please try again."
+        reply = "".join(partial) + "\n\nSorry, the response was interrupted. Please try again." if partial else "Sorry, I couldn't respond just now. Please try again."
 
-    # Store assistant message in DB
-    await prisma.chatmessage.create(
-        data={
-            "sessionId": session["sessionId"],
-            "role": "assistant",
-            "content": reply,
-        }
-    )
+    with benchmark.stage("save_and_emit_reply"):
+        # Store assistant message in DB
+        await prisma.chatmessage.create(
+            data={
+                "sessionId": session["sessionId"],
+                "role": "assistant",
+                "content": reply,
+            }
+        )
 
-    await sio.emit("assistant_message", {
-        "content": reply,
-    }, to=room)
+        payload = {"content": reply}
+        if data.get("stream"):
+            payload.update(messageId=user_record.id, sessionId=session["sessionId"], done=True)
+        await sio.emit("assistant_message", payload, to=room)
 
 
 @sio.event

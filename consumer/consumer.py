@@ -3,6 +3,7 @@ import asyncio
 import aio_pika
 import os
 from datetime import timedelta
+from shared.benchmark import benchmark_run
 from botocore.exceptions import ClientError
 
 from consumer.aws.file_loader import load_pdf_from_s3
@@ -20,6 +21,12 @@ async def lock_document(tx, document_id):
 
 
 async def process_document(payload: dict):
+    with benchmark_run("document_index", document_id=payload.get("document_id"),
+                       bot_id=payload.get("bot_id"), upload_id=payload.get("upload_id")):
+        await _process_document(payload)
+
+
+async def _process_document(payload: dict):
     document_id, bot_id, user_id = (payload.get(key) for key in ("document_id", "bot_id", "user_id"))
     upload_id = payload.get("upload_id")
     if not all(isinstance(value, str) and value for value in (document_id, bot_id, user_id)):
