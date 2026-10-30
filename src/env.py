@@ -22,14 +22,6 @@ class Env(BaseSettings):
     QDRANT_DB_CLUSTER_URL:str
     QDRANT_DB_API_KEY:str
 
-    @classmethod
-    def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings):
-        def environment_without_aws():
-            # AWS credentials must come from the project's .env, not the shell.
-            return {key: value for key, value in env_settings().items() if not key.startswith("AWS_")}
-
-        return init_settings, environment_without_aws, dotenv_settings, file_secret_settings
-
     class Config:
         env_file = Path(__file__).resolve().parents[1] / ".env"
         case_sensitive = True
