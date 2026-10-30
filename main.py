@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from src.routes.auth import router as auth_router
 from src.db import prisma
+from src.env import env
 from src.routes.bots import router as bots_router
 from src.routes.api_key import router as api_key_router
 from src.sockets.ws_chats import socket_app
@@ -16,7 +17,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=env.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

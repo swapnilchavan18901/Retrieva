@@ -8,6 +8,7 @@ class Env(BaseSettings):
 
     # optional defaults
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    CORS_ORIGINS: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
     AWS_REGION: str = Field(min_length=1)
     AWS_S3_BUCKET: str = Field(min_length=1)
     AWS_ACCESS_KEY_ID: str = Field(min_length=1)
