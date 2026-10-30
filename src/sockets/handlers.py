@@ -10,7 +10,6 @@ import asyncio
 @sio.event
 async def connect(sid, environ, auth):
     print(f"connect: {sid}")
-    print(f"auth: {auth}")
     api_key = auth.get("apiKey")
     bot_id = auth.get("botId")
     if not api_key or not bot_id:
@@ -154,41 +153,41 @@ async def user_message(sid, data):
     if not message:
         return
 
-    # Store user message in DB
-    await prisma.chatmessage.create(
-        data={
-            "sessionId": session["sessionId"],
-            "role": "user",
-            "content": message,
-        }
+    user_record = await prisma.chatmessage.create(
+        data={"sessionId": session["sessionId"], "role": "user", "content": message}
     )
-         # Get bot for its system prompt
-    bot = await prisma.bot.find_unique(where={"id": bot_id})
-    bot_data = bot.model_dump()
-    if not bot_data:
-        return
-    query_rewriter_response = await query_rewriter(message)
-    llm_context = []
-    for query in query_rewriter_response["new_queries"]:
-        context = await retrieve_relevant_chunks(
-            collection_name=bot_id,
-            question=query,
-        )
-        llm_context.append(context)
-    # Retrieve relevant document chunks from vector store
     try:
-        # Call the LLM
-        response = await llm_api_call(
-            system_prompt=system_prompt,
-            bot_prompt=bot_data["systemPrompt"],
-            context=context,
-            user_prompt=message,
+        previous = await prisma.chatmessage.find_many(
+            where={"sessionId": session["sessionId"], "id": {"not": user_record.id},
+                   "role": {"in": ["user", "assistant"]}},
+            order={"createdAt": "desc"}, take=12,
         )
-
-        reply = response.get("choices", [{}])[0].get("message", {}).get("content", "Sorry, I could not generate a response.")
+        history = [{"role": str(item.role.value if hasattr(item.role, "value") else item.role),
+                    "content": item.content} for item in reversed(previous)]
+        bot = await prisma.bot.find_unique(where={"id": bot_id})
+        if not bot or not bot.isActive:
+            raise ValueError("Assistant unavailable")
+        # Keep follow-up searches in context and combine all results, not just the last query.
+        rewritten = await query_rewriter(message, history=history)
+        contexts = await asyncio.gather(*[
+            retrieve_relevant_chunks(collection_name=bot_id, question=query)
+            for query in rewritten["new_queries"]
+        ])
+        context, seen = [], set()
+        for group in contexts:
+            for chunk in group:
+                text = chunk.get("text")
+                if text and text not in seen:
+                    seen.add(text)
+                    context.append(chunk)
+        response = await llm_api_call(system_prompt=system_prompt, bot_prompt=bot.systemPrompt,
+                                      context=context, user_prompt=message, history=history)
+        reply = response.get("choices", [{}])[0].get("message", {}).get("content")
+        if not reply:
+            reply = "Sorry, I couldn't respond just now. Please try again."
     except Exception as e:
-        print(f"LLM error: {e}")
-        reply = "Sorry, I encountered an error processing your question. Please try again."
+        print(f"Chat response error: {type(e).__name__}")
+        reply = "Sorry, I couldn't respond just now. Please try again."
 
     # Store assistant message in DB
     await prisma.chatmessage.create(
