@@ -4,7 +4,7 @@ from src.producer.rabbit_mq import get_connection
 
 QUEUE = "document_process_queue"
 
-async def publish_document_job(document_id: str, bot_id: str, user_id: str):
+async def publish_document_job(document_id: str, bot_id: str, user_id: str, upload_id: str | None = None):
     connection = await get_connection()
     channel = await connection.channel()
 
@@ -19,6 +19,8 @@ async def publish_document_job(document_id: str, bot_id: str, user_id: str):
         "bot_id": bot_id,
         "user_id": user_id
     }
+    if upload_id:
+        payload["upload_id"] = upload_id
 
     message = aio_pika.Message(
             body=json.dumps(payload).encode(),

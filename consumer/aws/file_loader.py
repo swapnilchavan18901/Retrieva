@@ -21,6 +21,7 @@ s3 = boto3.client(
     region_name=env.AWS_REGION,
     aws_access_key_id=env.AWS_ACCESS_KEY_ID,
     aws_secret_access_key=env.AWS_SECRET_ACCESS_KEY,
+    aws_session_token=env.AWS_SESSION_TOKEN,
     endpoint_url=f"https://s3.{env.AWS_REGION}.amazonaws.com",
     config=Config(signature_version="s3v4"),
 )
@@ -31,7 +32,6 @@ print("🔧 AWS S3 Consumer Configuration Loaded:")
 print(f"   Region: {env.AWS_REGION}")
 print(f"   Bucket: {BUCKET}")
 print(f"   Endpoint: https://s3.{env.AWS_REGION}.amazonaws.com")
-print(f"   Access Key ID: {env.AWS_ACCESS_KEY_ID[:10]}..." if env.AWS_ACCESS_KEY_ID else "   Access Key ID: NOT SET")
 print("=" * 60)
 
 def _load_pdf_from_s3_sync(key: str) -> tuple[list[Document], str]:
@@ -106,7 +106,8 @@ def _load_pdf_from_s3_sync(key: str) -> tuple[list[Document], str]:
             # Extract text from each page and create Document objects
             docs = []
             for page_num, page in enumerate(reader.pages):
-                text = page.extract_text()
+                # Preserve blank lines/paragraph spacing for structure-aware chunking.
+                text = page.extract_text(extraction_mode="layout")
                 doc = Document(
                     page_content=text,
                     metadata={

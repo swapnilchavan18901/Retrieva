@@ -7,6 +7,7 @@ s3 = boto3.client(
     region_name=env.AWS_REGION,
     aws_access_key_id=env.AWS_ACCESS_KEY_ID,
     aws_secret_access_key=env.AWS_SECRET_ACCESS_KEY,
+    aws_session_token=env.AWS_SESSION_TOKEN,
     endpoint_url=f"https://s3.{env.AWS_REGION}.amazonaws.com",
     config=Config(signature_version="s3v4"),
 )
@@ -17,8 +18,6 @@ def generate_presigned_upload_url(s3_key: str, expires_in: int = 300):
     Generate a presigned URL for uploading files to S3.
     IMPORTANT: The client MUST include 'Content-Type: application/pdf' header when uploading!
     """
-    print(f"s3accesskeyishere: {env.AWS_ACCESS_KEY_ID}")
-    print(f"s3secretaccesskeyishere: {env.AWS_SECRET_ACCESS_KEY}")
     print(f"s3regionishere: {env.AWS_REGION}")
     print(f"s3_keyishere: {s3_key}")
     print(f"BUCKETishere: {BUCKET}")

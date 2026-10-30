@@ -103,9 +103,25 @@ model Document {
   fileSize     BigInt
   storageUrl  String
   status       DocumentStatus @default(processing)
-
+  activeRevision String?
+  activeRevisionCreatedAt DateTime?
+  uploads      DocumentUpload[]
 
   createdAt    DateTime @default(now())
+}
+
+model DocumentUpload {
+  id           String   @id @default(uuid())
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  fileName     String
+  fileType     String
+  fileSize     BigInt
+  storageUrl   String
+  status       String   @default("pending")
+  createdAt    DateTime @default(now())
+
+  @@index([documentId, createdAt])
 }
 
 model ChatRequest {

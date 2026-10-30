@@ -1,194 +1,135 @@
-# ingestion/chunk_embed.py
+"""Stage incremental document revisions without re-embedding unchanged text."""
 
-import uuid
 import asyncio
-from qdrant_client.models import PointStruct
+from collections import defaultdict
+from hashlib import sha256
+import uuid
+
+from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct, PointIdsList, SetPayload, SetPayloadOperation
 from consumer.vector.qdrantdb import qdrant_client
 from consumer.vector.vector import ensure_collection
-from shared.embeddings import collection_for_bot, embed_texts
-
-# Text splitter configuration
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 200
+from shared.chunking import CHUNKER_VERSION, structure_chunks
+from shared.embeddings import EMBEDDING_MODEL, collection_for_bot, embed_texts
 
 
-def split_text_recursive(text: str, chunk_size: int = CHUNK_SIZE, chunk_overlap: int = CHUNK_OVERLAP, separators: list[str] = None) -> list[str]:
-    """
-    Simple recursive text splitter - splits text into chunks with overlap.
-    Alternative to LangChain's RecursiveCharacterTextSplitter.
-    """
-    if separators is None:
-        separators = ["\n\n", "\n", ". ", " ", ""]
-    
-    chunks = []
-    
-    def _split(text: str, separators: list[str]) -> list[str]:
-        if not text:
-            return []
-        
-        # Try each separator
-        for i, separator in enumerate(separators):
-            if separator == "":
-                # Last separator - split by character
-                return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size - chunk_overlap)]
-            
-            if separator in text:
-                splits = text.split(separator)
-                result = []
-                current_chunk = ""
-                
-                for split in splits:
-                    # Re-add separator except for empty splits
-                    split_with_sep = split + separator if split else ""
-                    
-                    if len(current_chunk) + len(split_with_sep) <= chunk_size:
-                        current_chunk += split_with_sep
-                    else:
-                        if current_chunk:
-                            result.append(current_chunk)
-                        # If single split is larger than chunk_size, recursively split it
-                        if len(split_with_sep) > chunk_size:
-                            result.extend(_split(split_with_sep, separators[i + 1:]))
-                            current_chunk = ""
-                        else:
-                            current_chunk = split_with_sep
-                
-                if current_chunk:
-                    result.append(current_chunk)
-                
-                return result
-        
-        return [text]
-    
-    chunks = _split(text, separators)
-    
-    # Add overlap between chunks
-    if chunk_overlap > 0 and len(chunks) > 1:
-        overlapped_chunks = []
-        for i, chunk in enumerate(chunks):
-            if i == 0:
-                overlapped_chunks.append(chunk)
-            else:
-                # Take overlap from previous chunk
-                overlap = chunks[i - 1][-chunk_overlap:] if len(chunks[i - 1]) >= chunk_overlap else chunks[i - 1]
-                overlapped_chunks.append(overlap + chunk)
-        return overlapped_chunks
-    
-    return chunks
+def document_filter(doc_id: str, user_id: str) -> Filter:
+    return Filter(must=[
+        FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+    ])
 
 
-async def embed_texts_async(texts: list[str], batch_size: int = 32) -> list[list[float]]:
-    """Embed document chunks through OpenRouter with the model shared with queries."""
+async def document_points(bot_id: str, doc_id: str, user_id: str):
+    records, offset = [], None
+    while True:
+        batch, offset = await asyncio.to_thread(
+            qdrant_client.scroll, collection_name=collection_for_bot(bot_id),
+            scroll_filter=document_filter(doc_id, user_id), limit=100,
+            offset=offset, with_payload=True, with_vectors=True,
+        )
+        records.extend(batch)
+        if offset is None:
+            return records
+
+
+async def embed_texts_async(texts: list[str], batch_size: int = 32):
     return await embed_texts(texts, batch_size=batch_size)
 
-async def _embed_and_store_async(
-    docs,
-    bot_id: str,
-    doc_id: str,
-    file_name: str,
-    user_id: str
-):
-    """Async helper for embedding and storing"""
-    # Get collection name based on bot_id
-    collection_name = collection_for_bot(bot_id)
-    
-    # Don't print the entire document list - it's too long
-    print(f"📚 Processing {len(docs)} pages from '{file_name}' for bot '{bot_id}'")
-    print(f"   Target collection: '{collection_name}'")
-    
-    # Check if documents have any content
-    pages_with_content = sum(1 for doc in docs if doc.page_content and doc.page_content.strip())
-    print(f"   Pages with content: {pages_with_content}/{len(docs)}")
-    
-    if pages_with_content == 0:
-        error_msg = (
-            f"PDF '{file_name}' has no extractable text content. "
-            f"This is likely a scanned/image-based PDF. "
-            f"Please use OCR or upload a text-based PDF."
-        )
-        print(f"❌ {error_msg}")
-        raise ValueError(error_msg)
-    
-    # Filter out empty pages before splitting
-    docs_with_content = [doc for doc in docs if doc.page_content and doc.page_content.strip()]
-    print(f"   Splitting {len(docs_with_content)} non-empty pages into chunks...")
-    
-    # Split each document into chunks
-    all_chunks = []
-    for doc in docs_with_content:
-        text = doc.page_content
-        text_chunks = split_text_recursive(text, CHUNK_SIZE, CHUNK_OVERLAP)
-        
-        # Keep track of metadata for each chunk
-        for chunk_text in text_chunks:
-            all_chunks.append({
-                "text": chunk_text,
-                "page": doc.metadata.get("page"),
-                "metadata": doc.metadata
-            })
-    
-    print(f"   ✅ Created {len(all_chunks)} chunks")
-    
-    if not all_chunks:
-        raise ValueError(f"No chunks created from document '{file_name}'. Document may be empty.")
-    
-    print(f"   🔄 Generating embeddings for {len(all_chunks)} chunks...")
-    texts = [chunk["text"] for chunk in all_chunks]
-    vectors = await embed_texts_async(texts)
-    print(f"   ✅ Embeddings generated")
 
-    print(f"   📦 Preparing {len(all_chunks)} points for Qdrant...")
-    points = []
-    for i, (chunk, vector) in enumerate(zip(all_chunks, vectors)):
-        points.append(
-            PointStruct(
-                id=str(uuid.uuid4()),
-                vector=vector,
-                payload={
-                    "doc_id": doc_id,
-                    "file_name": file_name,
-                    "user_id": user_id,
-                    "page": chunk.get("page"),
-                    "chunk_index": i,
-                    "text": chunk["text"]
-                }
-            )
-        )
+async def update_payloads(bot_id: str, updates):
+    # Reused vectors stay in place. Batch only their version/position metadata.
+    operations = [SetPayloadOperation(set_payload=SetPayload(points=[point_id], payload=payload))
+                  for point_id, payload in updates]
+    for start in range(0, len(operations), 100):
+        await asyncio.to_thread(qdrant_client.batch_update_points, collection_name=collection_for_bot(bot_id),
+                                update_operations=operations[start:start + 100], wait=True)
 
-    # Batch upsert for better performance and to avoid timeouts
-    print(f"   💾 Upserting {len(points)} points to '{collection_name}' in batches...")
-    batch_size = 100
-    total_batches = (len(points) + batch_size - 1) // batch_size
-    # think of way we can do this in parallel 
-    for i in range(0, len(points), batch_size):
-        batch = points[i:i + batch_size]
-        batch_num = (i // batch_size) + 1
-        print(f"      Batch {batch_num}/{total_batches}: Upserting {len(batch)} points...")
-        # Use asyncio.to_thread for synchronous Qdrant client
-        await asyncio.to_thread(
-            qdrant_client.upsert,
-            collection_name=collection_name,
-            points=batch
-        )
-    
-    print(f"✅ Successfully stored {len(points)} chunks in collection '{collection_name}'")
 
-async def embed_and_store(
-    docs,
-    bot_id: str,
-    doc_id: str,
-    file_name: str,
-    user_id: str
-):
-    """Async function for embedding and storing"""
-    # Ensure collection exists for this bot_id before storing
+async def embed_and_store(docs, bot_id: str, doc_id: str, file_name: str, user_id: str,
+                          revision: str | None = None, legacy_active: bool = False):
+    """Stage a revision. Caller publishes its DB pointer before cleanup_revision()."""
+    revision = revision or doc_id
+    chunks = []
+    for page in docs:
+        for chunk in structure_chunks(page.page_content or ""):
+            chunks.append({**chunk, "page": page.metadata.get("page")})
+    if not chunks:
+        raise ValueError("PDF has no extractable text content; use OCR for scanned PDFs")
+
     await ensure_collection(bot_id)
-    
-    # Directly call the async function
-    await _embed_and_store_async(
-        docs,
-        bot_id,
-        doc_id,
-        file_name,
-        user_id
-    )
+    existing = await document_points(bot_id, doc_id, user_id)
+    by_text = defaultdict(list)
+    cached_vectors = {}
+    for point in existing:
+        payload = point.payload or {}
+        if payload.get("embedding_model", EMBEDDING_MODEL) != EMBEDDING_MODEL:
+            continue
+        text = payload.get("text")
+        if isinstance(text, str) and isinstance(point.vector, list):
+            by_text[text].append(point)
+            cached_vectors[text] = point.vector
+    for points in by_text.values():
+        points.sort(key=lambda point: str(point.id))
+
+    # Compare the exact embedding inputs. Metadata and chunk position aren't part of the hash.
+    missing = list(dict.fromkeys(chunk["text"] for chunk in chunks if chunk["text"] not in cached_vectors))
+    vectors = await embed_texts_async(missing) if missing else []
+    if len(vectors) != len(missing):
+        raise ValueError("Unexpected embedding count; old revision has been preserved")
+    cached_vectors.update(zip(missing, vectors))
+
+    occurrences = defaultdict(int)
+    new_points, retained_updates = [], []
+    retained_ids = set()
+    for index, chunk in enumerate(chunks):
+        text = chunk["text"]
+        digest = sha256(text.encode("utf-8")).hexdigest()
+        occurrence = occurrences[text]
+        occurrences[text] += 1
+        old = by_text[text][occurrence] if occurrence < len(by_text[text]) else None
+        point_id = old.id if old else str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}:{EMBEDDING_MODEL}:{digest}:{occurrence}"))
+        previous = dict(old.payload or {}) if old else {}
+        revisions = list(previous.get("revisions", []))
+        metadata = dict(previous.get("revision_metadata", {}))
+        # Preserve legacy queries until the first versioned update is activated.
+        if old and not revisions and legacy_active:
+            revisions.append("legacy")
+            metadata["legacy"] = {key: previous.get(key) for key in ("file_name", "page", "chunk_index", "section")}
+        if revision not in revisions:
+            revisions.append(revision)
+        metadata[revision] = {"file_name": file_name, "page": chunk["page"], "chunk_index": index, "section": chunk["section"]}
+        payload = {
+            **previous, "doc_id": doc_id, "user_id": user_id, "text": text,
+            "text_hash": digest, "embedding_model": EMBEDDING_MODEL,
+            "chunker_version": CHUNKER_VERSION,
+            "revisions": revisions, "revision_metadata": metadata,
+        }
+        if old:
+            retained_ids.add(str(point_id))
+            retained_updates.append((point_id, payload))
+        else:
+            new_points.append(PointStruct(id=point_id, vector=cached_vectors[text], payload=payload))
+
+    # All embedding calls finish before any existing payload changes or deletions.
+    for start in range(0, len(new_points), 100):
+        await asyncio.to_thread(qdrant_client.upsert, collection_name=collection_for_bot(bot_id), points=new_points[start:start + 100], wait=True)
+    await update_payloads(bot_id, retained_updates)
+    stats = {"total": len(chunks), "embedded": len(missing), "reused": len(retained_ids),
+             "removed": sum(str(point.id) not in retained_ids for point in existing)}
+    print(f"Document {doc_id}: {stats['embedded']} new embeddings, {stats['reused']} reused chunks, {stats['removed']} obsolete chunks")
+    return stats
+
+
+async def cleanup_revision(bot_id: str, doc_id: str, user_id: str, revision: str):
+    """Run after activation, under the same per-document writer lock."""
+    points = await document_points(bot_id, doc_id, user_id)
+    obsolete = [point.id for point in points if revision not in (point.payload or {}).get("revisions", [])]
+    if obsolete:
+        await asyncio.to_thread(qdrant_client.delete, collection_name=collection_for_bot(bot_id), points_selector=PointIdsList(points=obsolete), wait=True)
+    updates = []
+    for point in points:
+        payload = point.payload or {}
+        if revision in payload.get("revisions", []):
+            current = payload.get("revision_metadata", {}).get(revision, {})
+            updates.append((point.id, {"revisions": [revision], "revision_metadata": {revision: current}}))
+    await update_payloads(bot_id, updates)

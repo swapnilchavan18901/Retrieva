@@ -25,7 +25,8 @@ async def llm_api_call(system_prompt: str, bot_prompt: str, user_prompt: str, co
 
     # --- Build structured system prompt ---
     context_block = "\n\n".join(
-        f"[Source: {chunk.get('file_name', 'unknown')}, Page: {chunk.get('page', 'N/A')}]\n{chunk.get('text', '')}"
+        f"[Source: {chunk.get('file_name', 'unknown')}, Page: {chunk.get('page', 'N/A')}, "
+        f"Section: {chunk.get('section') or 'N/A'}]\n{chunk.get('text', '')}"
         for chunk in context
     ) if context else "No relevant context found."
 

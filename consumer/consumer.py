@@ -2,10 +2,11 @@ import json
 import asyncio
 import aio_pika
 import os
+from datetime import timedelta
 from botocore.exceptions import ClientError
 
 from consumer.aws.file_loader import load_pdf_from_s3
-from consumer.vector.insert import embed_and_store
+from consumer.vector.insert import embed_and_store, cleanup_revision
 from consumer.consumer_db import prisma
 from consumer.consumer_env import env
 
@@ -13,48 +14,72 @@ RABBIT_MQ_URL = env.RABBIT_MQ_URL
 QUEUE = "document_process_queue"
 
 
+async def lock_document(tx, document_id):
+    # Transaction-scoped PostgreSQL lock also serializes multiple worker processes.
+    await tx.query_raw("SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended($1, 0))", document_id)
+
+
 async def process_document(payload: dict):
-    """
-    Your business logic (ASYNC SAFE)
-    """
-    print("⚙️ Processing document:", payload)
-
-    document_id = payload.get("document_id")
-    bot_id = payload.get("bot_id")
-    user_id = payload.get("user_id")
-    print(f"botIdishere{bot_id}")
-    document = await prisma.document.find_first(
-        where={"id": document_id}
-    )
-    
-    print(f"documentishere { document }")
-    if not document:
-        print(f"❌ Document not found in database: {document_id}")
-        raise Exception(f"Document not found: {document_id}")
-
-    document_path = document.storageUrl
-    print(f"📄 Loading document from S3: {document_path}")
-    print(f"botIdishere{bot_id}")
-    # Async loading from S3 - returns (docs, temp_file_path)
-    document_data, temp_file_path = await load_pdf_from_s3(document_path)
-    print(f"botIdishere{bot_id}")
-
+    document_id, bot_id, user_id = (payload.get(key) for key in ("document_id", "bot_id", "user_id"))
+    upload_id = payload.get("upload_id")
+    if not all(isinstance(value, str) and value for value in (document_id, bot_id, user_id)):
+        raise ValueError("Invalid document job")
+    revision = upload_id or document_id
+    activated = False
+    verified = False
     try:
-        # Async embedding and storage
-        await embed_and_store(
-            docs=document_data,
-            bot_id=bot_id,
-            doc_id=document_id,
-            file_name=document.fileName,
-            user_id=user_id,
-        )
-
-        print("✅ Done:", payload)
-    finally:
-        # Clean up temporary file after processing is complete
-        if os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
-            print(f"🗑️  Cleaned up temp file: {temp_file_path}")
+        # Keep the lock through staging and activation, so concurrent/retried updates cannot race.
+        async with prisma.tx(timeout=timedelta(minutes=15), max_wait=timedelta(seconds=30)) as tx:
+            await lock_document(tx, document_id)
+            document = await tx.document.find_unique(where={"id": document_id}, include={"bot": True})
+            if not document or document.botId != bot_id or document.bot.userId != user_id:
+                raise ValueError("Document not found or job ownership mismatch")
+            upload = await tx.documentupload.find_unique(where={"id": upload_id}) if upload_id else None
+            if upload_id and (not upload or upload.documentId != document_id):
+                raise ValueError("Upload not found")
+            verified = True
+            if upload and upload.status == "superseded":
+                return
+            if upload and document.activeRevisionCreatedAt and upload.createdAt < document.activeRevisionCreatedAt:
+                await tx.documentupload.update(where={"id": upload_id}, data={"status": "superseded"})
+                return
+            if document.activeRevision == revision:
+                activated = True  # Duplicate delivery: skip embeddings, retry any unfinished cleanup.
+            elif not upload_id and document.activeRevision:
+                return  # An old pre-migration job must never replace a newer revision.
+            else:
+                source = upload or document
+                if upload:
+                    await tx.documentupload.update(where={"id": upload_id}, data={"status": "processing"})
+                docs, temp_path = await load_pdf_from_s3(source.storageUrl)
+                try:
+                    await embed_and_store(docs, bot_id, document_id, source.fileName, user_id,
+                                          revision=revision, legacy_active=not document.activeRevision)
+                finally:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                # A single DB pointer change publishes the complete revision to retrieval.
+                await tx.document.update(where={"id": document_id}, data={
+                    "activeRevision": revision, "activeRevisionCreatedAt": source.createdAt,
+                    "fileName": source.fileName, "fileType": source.fileType,
+                    "fileSize": source.fileSize, "storageUrl": source.storageUrl, "status": "ready",
+                })
+                if upload:
+                    await tx.documentupload.update(where={"id": upload_id}, data={"status": "ready"})
+        activated = True
+        # Cleanup after commit; never remove the active old revision on an embedding failure.
+        async with prisma.tx(timeout=timedelta(minutes=5), max_wait=timedelta(seconds=30)) as tx:
+            await lock_document(tx, document_id)
+            current = await tx.document.find_unique(where={"id": document_id})
+            if current and current.activeRevision == revision:
+                await cleanup_revision(bot_id, document_id, user_id, revision)
+        print(f"✅ Indexed document {document_id}")
+    except Exception:
+        if verified and not activated:
+            if upload_id:
+                await prisma.documentupload.update_many(where={"id": upload_id, "status": {"not": "ready"}}, data={"status": "failed"})
+            await prisma.document.update_many(where={"id": document_id, "activeRevision": None}, data={"status": "failed"})
+        raise
 
 
 async def on_message(message: aio_pika.IncomingMessage):

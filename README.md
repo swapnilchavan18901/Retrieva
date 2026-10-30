@@ -277,3 +277,53 @@ socket.on("assistant_message", ({ content }) => { /* AI reply */ });
 - **ChatSession / ChatMessage** — Conversation history
 - **Plan / Subscription** — Usage-based billing
 - **UsageMetric** — Per-key daily request/token tracking
+
+## Updating PDFs without embedding every chunk again
+
+The worker now uses deterministic paragraph and recognized-heading boundaries,
+with a 1,000-character maximum. Long paragraphs split at sentence/word boundaries.
+It does not add overlap from unrelated neighboring paragraphs or call an AI model
+to choose boundaries. PDF layout extraction preserves paragraph spacing where
+possible; PDFs with poor layout or changed pagination can still produce changed
+chunks even when some visible wording is unchanged.
+
+In **My assistants → Manage documents / update PDF**, choose **Update PDF** next
+to the existing document. This keeps its document ID even if the filename changes.
+**Add another PDF** creates a separate document; matching filenames do not replace
+one another automatically.
+
+The worker compares exact chunk text within that document and embedding model.
+Unchanged chunks retain their Qdrant point IDs and vectors; only new text is sent
+to OpenRouter. Repeated identical chunks retain their separate occurrences but
+share one embedding request per unique new text. File/page/section metadata is
+versioned separately. Changes to the embedding model require new embeddings.
+
+Uploads get separate S3 objects and revision records. A PostgreSQL advisory lock
+serializes writers for each document across worker processes. Retrieval filters
+by the document's active revision: a staged upload remains hidden until its
+revision pointer commits. Obsolete vectors are deleted after activation. Failed
+embedding requests leave the previous active revision searchable. Duplicate jobs
+reuse staged vectors where available, and older queued updates cannot overwrite
+a newer active revision. Previously stored S3 versions are retained.
+
+### Required upgrade steps
+
+Stop the API and worker, then run from `FileMind/` with `.venv` activated:
+
+```bash
+python -m pip install -r requirements.txt -r consumer/requirements.txt
+python -m prisma migrate deploy
+python -m prisma generate
+```
+
+Restart the API and worker, and deploy/restart the frontend. No automatic
+re-embedding or deletion happens during this migration. Existing collections
+remain readable; on their first update, chunks whose text differs because of
+the new splitting rules will need new embeddings. Qdrant creates the payload
+indexes needed for revision filters automatically; its API key needs write access.
+
+Offline checks (no AWS/RabbitMQ/OpenRouter credentials or spending required):
+
+```bash
+python -m unittest discover -s tests
+```

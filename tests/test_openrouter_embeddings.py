@@ -18,8 +18,11 @@ from shared import embeddings
 class OpenRouterEmbeddingsTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.db = QdrantClient(":memory:")
+        self.documents = []
+        self.fake_prisma = types.SimpleNamespace(document=types.SimpleNamespace(find_many=AsyncMock(side_effect=lambda **kwargs: self.documents)))
         self.module_patch = patch.dict(sys.modules, {
             "consumer.vector.qdrantdb": types.SimpleNamespace(qdrant_client=self.db),
+            "src.db": types.SimpleNamespace(prisma=self.fake_prisma),
             "src.vector.client": types.SimpleNamespace(qdrant_client=self.db),
         })
         self.module_patch.start()
@@ -60,6 +63,7 @@ class OpenRouterEmbeddingsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ingest_and_retrieve_use_same_model_and_collection(self):
         bot_id = str(uuid.uuid4())
+        self.documents = [types.SimpleNamespace(id="document", activeRevision="document")]
         docs = [types.SimpleNamespace(page_content=text, metadata={"page":page})
                 for page, text in enumerate(["apple information", "orange information"])]
         await self.ingestion.embed_and_store(docs, bot_id, "document", "fruit.pdf", "user")
@@ -87,7 +91,8 @@ class OpenRouterEmbeddingsTests(unittest.IsolatedAsyncioTestCase):
         bot_id = str(uuid.uuid4())
         self.db.create_collection(bot_id, vectors_config=VectorParams(size=1536, distance=Distance.COSINE))
         self.db.upsert(bot_id, points=[PointStruct(id=1, vector=[1.0] + [0.0] * 1535,
-                                                   payload={"text": "existing apple chunk"})])
+                                                   payload={"text": "existing apple chunk", "doc_id": "legacy"})])
+        self.documents = [types.SimpleNamespace(id="legacy", activeRevision=None)]
         await self.schema.ensure_collection(bot_id)
         self.assertEqual(self.calls, [])
         result = await self.retrieval.retrieve_relevant_chunks(bot_id, "apple question", top_k=1)
