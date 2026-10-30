@@ -3,6 +3,7 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from src.routes.auth import router as auth_router
 from src.db import prisma
 from src.routes.bots import router as bots_router
@@ -30,6 +31,23 @@ async def shutdown():
     await prisma.disconnect()
     
 #sockets
+
+
+@app.get("/")
+async def status():
+    return {"status": "ok", "service": "FileMind"}
+
+
+@app.get("/health")
+async def health():
+    database_connected = prisma.is_connected()
+    return JSONResponse(
+        status_code=200 if database_connected else 503,
+        content={
+            "status": "ok" if database_connected else "unhealthy",
+            "database": "connected" if database_connected else "disconnected",
+        },
+    )
 
 
 app.include_router(auth_router)
