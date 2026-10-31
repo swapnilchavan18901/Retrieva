@@ -9,7 +9,7 @@ from consumer.vector.qdrantdb import qdrant_client
 from consumer.vector.vector import ensure_collection
 import asyncio
 
-QDRANT_COLLECTION = "fileMind"
+QDRANT_COLLECTION = "Retrieva"
 
 
 def clear_collection():

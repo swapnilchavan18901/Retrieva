@@ -13,7 +13,7 @@ from src.sockets.ws_chats import socket_app
 from src.routes.documenation import router as documentation_router
 from src.routes.testing import router as testing_router
 from src.routes.chats import router as chats_router
-app = FastAPI()
+app = FastAPI(title="Retrieva")
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,7 +36,7 @@ async def shutdown():
 
 @app.get("/")
 async def status():
-    return {"status": "ok", "service": "FileMind"}
+    return {"status": "ok", "service": "Retrieva"}
 
 
 @app.get("/health")

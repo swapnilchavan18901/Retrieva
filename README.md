@@ -1,8 +1,8 @@
-# FileMind
+# Retrieva
 
 **Turn your PDFs into intelligent AI chatbots for your Platforms.**
 
-FileMind is a full-stack platform that lets users upload PDF documents, process them into vector embeddings, and create AI chatbots — embeddable on any website via a simple API key + bot ID over WebSockets.
+Retrieva is a full-stack platform that lets users upload PDF documents, process them into vector embeddings, and create AI chatbots — embeddable on any website via a simple API key + bot ID over WebSockets.
 
 ---
 
@@ -30,7 +30,7 @@ FileMind is a full-stack platform that lets users upload PDF documents, process 
 
 > **How it works:** Bot owners manage everything through the admin dashboard.
 > Their end users (website visitors) connect directly to the WebSocket server
-> using a bot ID + API key — no FileMind frontend needed.
+> using a bot ID + API key — no Retrieva frontend needed.
 
 ---
 
@@ -107,8 +107,8 @@ RabbitMQ → on_message()
 ## Project Structure
 
 ```
-FileMind_Main/
-├── FileMind/                    # Backend (Python)
+Retrieva_Main/
+├── Retrieva/                    # Backend (Python)
 │   ├── main.py                  # FastAPI app entrypoint
 │   ├── prisma/
 │   │   └── schema.prisma        # Database schema
@@ -142,14 +142,14 @@ FileMind_Main/
 │   │       └── vector.py        #   Collection management
 │   └── requirements.txt
 │
-└── FileMind-FE/                 # Admin Dashboard (Next.js — separate repo)
+└── Retrieva-FE/                 # Admin Dashboard (Next.js — separate repo)
 ```
 
 ---
 
 ## Environment Variables
 
-For a fresh setup, copy `FileMind/env.example` to `FileMind/.env` and replace the
+For a fresh setup, copy `Retrieva/env.example` to `Retrieva/.env` and replace the
 placeholder values. Both the backend and consumer use this file:
 
 ```env
@@ -169,11 +169,11 @@ QDRANT_DB_CLUSTER_URL=https://...      QDRANT_DB_API_KEY=...
 The existing OpenAI SDK connects to Sarvam's OpenAI-compatible endpoint;
 chat requests are sent to Sarvam. No OpenAI key or credits are required.
 The `openai` Python dependency is only the compatible client for Sarvam chat.
-Both services read `FileMind/.env`, independent of the working directory.
+Both services read `Retrieva/.env`, independent of the working directory.
 
 Document and query embeddings call `https://openrouter.ai/api/v1/embeddings`
 with `openai/text-embedding-3-small`, explicitly requesting 1536 dimensions.
-Set `OPENROUTER_API_KEY` in `FileMind/.env`; both the API and consumer require it.
+Set `OPENROUTER_API_KEY` in `Retrieva/.env`; both the API and consumer require it.
 There is no model download, no local GPU requirement, and no direct OpenAI or
 Gemini key needed. Embedding requests consume your OpenRouter balance.
 
@@ -187,7 +187,7 @@ Original bot-ID collections generated with `text-embedding-3-small` at 1536
 dimensions are reused directly, with no migration or re-embedding charge.
 Gemini or BGE-M3 vectors cannot be reused with this model. If you have documents
 in a collection from one of those models, stop the API and pause uploads, then
-copy and re-embed that collection's chunks from the `FileMind/` directory:
+copy and re-embed that collection's chunks from the `Retrieva/` directory:
 
 ```bash
 python -m consumer.utils.reindex_embeddings --bot-id YOUR_BOT_UUID --source-collection OLD_COLLECTION
@@ -206,16 +206,16 @@ migration completes. Migration does not run automatically during startup.
 
 ```bash
 # 1. Backend (Producer API)
-cd FileMind && pip install -r requirements.txt
+cd Retrieva && pip install -r requirements.txt
 prisma generate && prisma db push
 fastapi dev main.py                 # → http://localhost:8000
 
 # 2. Consumer Worker (separate terminal)
-cd FileMind && pip install -r consumer/requirements.txt
+cd Retrieva && pip install -r consumer/requirements.txt
 python -m consumer.consumer
 ```
 
-> The frontend (Next.js admin dashboard) lives in `FileMind-FE/` — see its own README for setup.
+> The frontend (Next.js admin dashboard) lives in `Retrieva-FE/` — see its own README for setup.
 
 ---
 
@@ -252,11 +252,11 @@ python -m consumer.consumer
 
 ### Embeddable Chat — How End Users Connect
 
-FileMind is a **BaaS (Bot as a Service)**. The dashboard is for bot owners only. End users connect from **any website** using Socket.IO:
+Retrieva is a **BaaS (Bot as a Service)**. The dashboard is for bot owners only. End users connect from **any website** using Socket.IO:
 
 ```js
 // On the bot owner's website — their visitors chat with the bot
-const socket = io("https://your-filemind-server", {
+const socket = io("https://your-retrieva-server", {
   auth: { apiKey: "fm_...", botId: "uuid-..." }
 });
 
@@ -308,7 +308,7 @@ a newer active revision. Previously stored S3 versions are retained.
 
 ### Required upgrade steps
 
-Stop the API and worker, then run from `FileMind/` with `.venv` activated:
+Stop the API and worker, then run from `Retrieva/` with `.venv` activated:
 
 ```bash
 python -m pip install -r requirements.txt -r consumer/requirements.txt
@@ -331,7 +331,7 @@ python -m unittest discover -s tests
 ## Token, cost, and latency benchmarking
 
 The API and document worker emit JSON benchmark records to the terminal and
-`FileMind/logs/benchmarks-<process-id>.jsonl`. Files rotate at 10 MiB with five
+`Retrieva/logs/benchmarks-<process-id>.jsonl`. Files rotate at 10 MiB with five
 backups per process and are excluded from Git. No prompts, replies, document text,
 API keys, or raw provider error bodies are included in these records.
 
@@ -367,7 +367,7 @@ in USD when returned; missing cost is not manufactured. INR and USD are never
 combined into one monetary total. Your provider dashboard/invoice remains the
 source of truth for billed charges and plan-specific rates.
 
-Optional settings in `FileMind/.env` (restart the API and worker after changing):
+Optional settings in `Retrieva/.env` (restart the API and worker after changing):
 
 ```env
 BENCHMARK_ENABLED=true
@@ -383,7 +383,7 @@ Use your account's actual rates if different. Set `BENCHMARK_LOG_PATH=` to disab
 file output, or `BENCHMARK_ENABLED=false` to disable benchmark output entirely.
 
 ```bash
-# From FileMind/, after making some requests:
+# From Retrieva/, after making some requests:
 tail -f logs/benchmarks-*.jsonl
 
 # With jq installed, inspect one process's chat summaries:
@@ -526,6 +526,24 @@ Database concurrency tests are opt-in and run only against a disposable local
 PostgreSQL on port 55433. Apply all migrations there first, then run:
 
 ```bash
-FILEMIND_LIMIT_TEST_DATABASE_URL='postgresql://postgres:local-test-only@127.0.0.1:55433/filemind_limits_clean' \
+RETRIEVA_LIMIT_TEST_DATABASE_URL='postgresql://postgres:local-test-only@127.0.0.1:55433/retrieva_limits_clean' \
   python -m unittest discover -s tests
 ```
+
+
+## Retrieva rename
+
+The backend folder is now `Retrieva/` and the dashboard is `Retrieva-FE/`.
+Before starting the updated backend against an existing database, apply the
+function-rename migration from `Retrieva/`:
+
+```bash
+python -m prisma migrate deploy
+python -m prisma generate
+```
+
+The migration preserves the admission function's implementation and privileges.
+Historical migrations keep their original names and contents for checksum integrity.
+Use `RETRIEVA_LIMIT_TEST_DATABASE_URL` for optional disposable-database tests.
+Existing database URLs, cloud resource names, and Git remote URLs remain valid;
+the rename does not require moving data or renaming hosted repositories.

@@ -1,7 +1,7 @@
 """Re-embed a different model's chunks into the bot's OpenAI embedding collection.
 
 Original text-embedding-3-small collections do not need migration.
-Run from FileMind/: python -m consumer.utils.reindex_embeddings
+Run from Retrieva/: python -m consumer.utils.reindex_embeddings
     --bot-id BOT_UUID --source-collection OLD_COLLECTION
 Pause document uploads while migrating. Re-running safely upserts the same IDs.
 """

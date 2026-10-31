@@ -150,7 +150,7 @@ class BenchmarkTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(benchmark._current_run.get())
 
     def test_jsonl_sink_and_disable_switch(self):
-        logger = logging.getLogger(f'filemind.benchmark.{__import__("os").getpid()}')
+        logger = logging.getLogger(f'retrieva.benchmark.{__import__("os").getpid()}')
         saved_handlers = list(logger.handlers)
         logger.handlers.clear()
         benchmark._logger.cache_clear()

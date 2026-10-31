@@ -42,7 +42,7 @@ def settings():
 @lru_cache(maxsize=1)
 def _logger():
     config = settings()
-    logger = logging.getLogger(f"filemind.benchmark.{os.getpid()}")
+    logger = logging.getLogger(f"retrieva.benchmark.{os.getpid()}")
     logger.setLevel(logging.INFO)
     logger.propagate = False
     formatter = logging.Formatter("%(message)s")
@@ -150,7 +150,7 @@ class BenchmarkRun:
         self.error_type = type(error).__name__
 
 
-_current_run = ContextVar("filemind_benchmark_run", default=None)
+_current_run = ContextVar("retrieva_benchmark_run", default=None)
 
 
 @contextmanager

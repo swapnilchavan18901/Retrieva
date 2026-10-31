@@ -28,7 +28,7 @@ class EmbeddingSettings(BaseSettings):
 def _api_key() -> str:
     key = EmbeddingSettings().OPENROUTER_API_KEY.strip()
     if not key:
-        raise ValueError("Set OPENROUTER_API_KEY in FileMind/.env to enable embeddings")
+        raise ValueError("Set OPENROUTER_API_KEY in Retrieva/.env to enable embeddings")
     return key
 
 

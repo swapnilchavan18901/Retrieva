@@ -28,11 +28,11 @@ class InputLimitTests(unittest.TestCase):
         self.assertEqual(DAILY_OUTPUT_TOKEN_LIMIT, 50_000)
 
 
-@unittest.skipUnless(os.environ.get('FILEMIND_LIMIT_TEST_DATABASE_URL'), 'disposable local DB not configured')
+@unittest.skipUnless(os.environ.get('RETRIEVA_LIMIT_TEST_DATABASE_URL'), 'disposable local DB not configured')
 class PostgresLimitTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from generated.prisma import Prisma
-        url = os.environ['FILEMIND_LIMIT_TEST_DATABASE_URL']
+        url = os.environ['RETRIEVA_LIMIT_TEST_DATABASE_URL']
         parsed = urlparse(url)
         if parsed.hostname not in {'localhost', '127.0.0.1'} or parsed.port != 55433:
             raise RuntimeError('Tests require disposable PostgreSQL on localhost:55433')

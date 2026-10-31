@@ -117,7 +117,7 @@ class ChatLimits:
     async def acquire(self, session):
         bot, key, chat, address = (session[k] for k in ("botId", "apiKeyId", "sessionId", "ipHash"))
         rows = await self.db.query_raw(
-            'SELECT filemind_admit_chat($1,$2,$3,$4,$5,$6::integer,$7::integer) AS result',
+            'SELECT retrieva_admit_chat($1,$2,$3,$4,$5,$6::integer,$7::integer) AS result',
             str(uuid.uuid4()), bot, key, chat, address, MAX_OUTPUT_TOKENS, DAILY_OUTPUT_TOKEN_LIMIT)
         result = rows[0]["result"]
         if isinstance(result, str):
