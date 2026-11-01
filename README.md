@@ -50,6 +50,8 @@ Retrieva is a full-stack platform that lets users upload PDF documents, process 
 
 ## Features
 
+- **One-click demo** — Login and signup offer “Try demo account”, which calls `POST /auth/demo` and opens the dashboard without credentials. The backend automatically creates a dedicated non-admin demo user on first use; later visitors share that workspace and its changes. Use sample documents only. No database migration or demo password configuration is required. Deploy the frontend and backend together for this feature.
+
 - **Bot Builder** — Create multiple AI bots, each with a custom system prompt and isolated document knowledge base.
 - **PDF Upload & Processing** — Frontend uploads PDFs directly to S3 via presigned URLs; the consumer worker automatically chunks, embeds, and stores them in Qdrant.
 - **Embeddable Chat** — Share a bot ID + API key with anyone; they connect via Socket.IO from **their own website** and let their visitors chat with the bot.

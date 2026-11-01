@@ -3,6 +3,12 @@ from pydantic import BaseModel, EmailStr, Field
 from src.db import prisma
 from src.utils.password import hash_password, verify_password
 from src.utils.jwt import create_access_token
+from secrets import token_urlsafe
+
+
+# A fixed identity keeps demo access separate from all registered accounts.
+DEMO_USER_ID = "f64a43a4-3712-4eab-9a52-4ea4c63cbe15"
+DEMO_USER_EMAIL = "demo@retrieva.invalid"
 
 router = APIRouter(
     prefix="/auth",
@@ -18,6 +24,31 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+@router.post("/demo")
+async def demo_login():
+    user = await prisma.user.find_unique(where={"id": DEMO_USER_ID})
+    if user is None:
+        user = await prisma.user.upsert(
+            where={"id": DEMO_USER_ID},
+            data={
+                "create": {
+                    "id": DEMO_USER_ID,
+                    "email": DEMO_USER_EMAIL,
+                    "name": "Demo visitor",
+                    "passwordHash": hash_password(token_urlsafe(32)),
+                    "role": "user",
+                },
+                "update": {},
+            },
+        )
+
+    # Fail closed if the reserved identity was repurposed by an operator.
+    if user.email != DEMO_USER_EMAIL or user.role != "user":
+        raise HTTPException(status_code=503, detail="Demo access is temporarily unavailable")
+
+    return {"access_token": create_access_token({"sub": user.id})}
 
 
 @router.post("/register")
