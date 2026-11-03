@@ -30,7 +30,7 @@ VALUES = {
 
 
 class AWSSettingsTests(unittest.TestCase):
-    def load_settings(self, relative_path, values):
+    def load_settings(self, relative_path, values, process_values=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = root / relative_path
@@ -44,6 +44,7 @@ class AWSSettingsTests(unittest.TestCase):
                 "AWS_REGION": "eu-west-1",
                 "AWS_S3_BUCKET": "shell-bucket",
                 "JWT_SECRET": "shell-jwt",
+                **(process_values or {}),
             }, clear=True):
                 return runpy.run_path(str(target))["env"]
 
@@ -75,6 +76,25 @@ class AWSSettingsTests(unittest.TestCase):
                             del values[key]
                         with self.assertRaises(ValidationError):
                             self.load_settings(path, values)
+
+    def test_production_rejects_weak_secrets_demo_access_and_wildcard_origins(self):
+        valid = {
+            'ENVIRONMENT': 'production', 'JWT_SECRET': 'a-random-test-secret-that-is-long-enough',
+            'CORS_ORIGINS': '["https://app.example.com"]',
+            'SOCKET_CORS_ORIGINS': '["https://customer.example.com"]', 'DEMO_ENABLED': 'false',
+        }
+        settings = self.load_settings('src/env.py', VALUES, valid)
+        self.assertFalse(settings.DEMO_ENABLED)
+        for invalid in ({'JWT_SECRET': 'short'}, {'DEMO_ENABLED': 'true'}, {'CORS_ORIGINS': '["*"]'},
+                        {'SOCKET_CORS_ORIGINS': '["http://customer.example.com"]'}):
+            with self.subTest(invalid=invalid), self.assertRaises(ValidationError):
+                self.load_settings('src/env.py', VALUES, {**valid, **invalid})
+
+    def test_demo_is_disabled_by_default_and_invalid_rate_caps_are_rejected(self):
+        self.assertFalse(self.load_settings('src/env.py', VALUES).DEMO_ENABLED)
+        for invalid in ('0', '-1', '10001'):
+            with self.subTest(invalid=invalid), self.assertRaises(ValidationError):
+                self.load_settings('src/env.py', VALUES, {'HTTP_REQUESTS_PER_MINUTE': invalid})
 
 
 if __name__ == "__main__":

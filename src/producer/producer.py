@@ -6,14 +6,6 @@ QUEUE = "document_process_queue"
 
 async def publish_document_job(document_id: str, bot_id: str, user_id: str, upload_id: str | None = None):
     connection = await get_connection()
-    channel = await connection.channel()
-
-    # Declare durable queue
-    await channel.declare_queue(
-        QUEUE,
-        durable=True
-    )
-
     payload = {
         "document_id": document_id,
         "bot_id": bot_id,
@@ -24,13 +16,14 @@ async def publish_document_job(document_id: str, bot_id: str, user_id: str, uplo
 
     message = aio_pika.Message(
             body=json.dumps(payload).encode(),
-            delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+            content_type="application/json",
+            message_id=upload_id or document_id,
         )
 
-    await channel.default_exchange.publish(
-        message,
-        routing_key=QUEUE
-    )
-
-    await connection.close()
-    print("📨 Job published:", payload)
+    try:
+        channel = await connection.channel(publisher_confirms=True)
+        await channel.declare_queue(QUEUE, durable=True)
+        await channel.default_exchange.publish(message, routing_key=QUEUE, timeout=10)
+    finally:
+        await connection.close()

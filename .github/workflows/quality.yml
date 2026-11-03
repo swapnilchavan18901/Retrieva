@@ -1,0 +1,38 @@
+name: Backend quality
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: retrieva_test
+        ports:
+          - 55433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:test-only@127.0.0.1:55433/retrieva_test
+      DIRECT_URL: postgresql://postgres:test-only@127.0.0.1:55433/retrieva_test
+      RETRIEVA_LIMIT_TEST_DATABASE_URL: postgresql://postgres:test-only@127.0.0.1:55433/retrieva_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt -r consumer/requirements.txt
+      - run: prisma generate
+      - run: prisma validate
+      - run: prisma migrate deploy
+      - run: python -m compileall -q -x '/[.]venv/' main.py src shared consumer
+      - run: python -m unittest discover -s tests
+      - run: pip install pip-audit
+      - run: pip-audit --no-deps --disable-pip -r requirements.txt

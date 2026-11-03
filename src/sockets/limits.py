@@ -107,6 +107,11 @@ class ChatLimits:
 
     async def control(self, session):
         async with self.transaction() as (tx, now):
+            authorized = await tx.query_raw('''SELECT k."id" FROM "ApiKey" k JOIN "Bot" b ON b."id"=k."botId"
+                WHERE k."id"=$1 AND k."botId"=$2 AND k."isActive"=TRUE AND b."isActive"=TRUE''',
+                session["apiKeyId"], session["botId"])
+            if not authorized:
+                raise LimitDenied("unauthorized", "This chat is unavailable. Please reconnect.", 0)
             active = await tx.query_raw('SELECT "id" FROM "ChatLimitLease" WHERE "kind"=\'generation\' AND "sessionId"=$1', session.get("sessionId", ""))
             denied = LimitDenied("reply_in_progress", "Please wait for the current reply.") if active else await self.hit(tx, now, [
                 ("session_control_ip", session["ipHash"], 20, 60),

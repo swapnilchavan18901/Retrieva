@@ -50,7 +50,7 @@ Retrieva is a full-stack platform that lets users upload PDF documents, process 
 
 ## Features
 
-- **One-click demo** — Login and signup offer “Try demo account”, which calls `POST /auth/demo` and opens the dashboard without credentials. The backend automatically creates a dedicated non-admin demo user on first use; later visitors share that workspace and its changes. Use sample documents only. No database migration or demo password configuration is required. Deploy the frontend and backend together for this feature.
+- **Optional demo workspace** — On a separate development deployment, set `DEMO_ENABLED=true` and frontend `NEXT_PUBLIC_DEMO_ENABLED=true` to show demo access. `POST /auth/demo` creates/reuses a dedicated non-admin shared workspace. Use sample documents only. Demo access is disabled by default and production configuration rejects enabling it.
 
 - **Bot Builder** — Create multiple AI bots, each with a custom system prompt and isolated document knowledge base.
 - **PDF Upload & Processing** — Frontend uploads PDFs directly to S3 via presigned URLs; the consumer worker automatically chunks, embeds, and stores them in Qdrant.
@@ -58,7 +58,7 @@ Retrieva is a full-stack platform that lets users upload PDF documents, process 
 - **RAG Chat** — Each message retrieves relevant document chunks from Qdrant and generates context-aware answers using Sarvam AI.
 - **API Key Management** — Generate, list, and revoke API keys per bot to control external access.
 - **Chat Sessions** — Persistent conversation history with session management (start, resume, list).
-- **Subscription & Plans** — Built-in plan/subscription models for usage limits (bots, documents, requests, tokens).
+- **Launch safety caps** — Transactional bot, document and active-key caps, shared HTTP/chat throttles and a daily chat output-token allowance. Plan/subscription database models exist; checkout and subscription entitlement enforcement still need implementation.
 - **Async Everything** — Fully async backend with FastAPI, aio-pika, and AsyncOpenAI for high throughput.
 
 ---
@@ -172,6 +172,12 @@ The existing OpenAI SDK connects to Sarvam's OpenAI-compatible endpoint;
 chat requests are sent to Sarvam. No OpenAI key or credits are required.
 The `openai` Python dependency is only the compatible client for Sarvam chat.
 Both services read `Retrieva/.env`, independent of the working directory.
+AWS settings come only from that file (or explicit settings constructor arguments),
+so unrelated shell AWS credentials/session tokens cannot override them. Other
+process environment values retain their usual precedence over the file.
+
+See [LAUNCH.md](LAUNCH.md) for production configuration, rate/resource limits,
+the document outbox migration, deployment checks and remaining commercial gates.
 
 Document and query embeddings call `https://openrouter.ai/api/v1/embeddings`
 with `openai/text-embedding-3-small`, explicitly requesting 1536 dimensions.

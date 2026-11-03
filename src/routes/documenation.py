@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
-from src.producer.producer import publish_document_job
+from src.producer.outbox import enqueue_document_job
 from src.db import prisma
 from src.deps.auth import get_current_user
 from src.schemas.documentation import CreateUploadUrlRequest, CompleteUploadRequest
 from src.utils.s3 import generate_presigned_upload_url
+from src.env import env
+from src.resource_limits import enforce_quota
 import uuid
 import os
 
@@ -47,6 +49,7 @@ async def create_upload_url(bot_id: str, payload: CreateUploadUrlRequest, user=D
             "fileSize": payload.fileSize, "storageUrl": s3_key}
     async with prisma.tx() as tx:
         if not payload.documentId:
+            await enforce_quota(tx, "Document", bot_id, "document", {"botId": bot_id}, env.MAX_DOCUMENTS_PER_BOT)
             await tx.document.create(data={"id": document_id, "botId": bot_id, **data, "status": "queued"})
         await tx.documentupload.create(data={"id": upload_id, "documentId": document_id, **data})
     return {"documentId": document_id, "uploadId": upload_id, "uploadUrl": upload_url, "s3Key": s3_key}
@@ -67,19 +70,17 @@ async def complete_document_upload(document_id: str, payload: CompleteUploadRequ
             raise HTTPException(status_code=404, detail="Upload not found")
         if upload.status in ("queued", "processing", "ready", "superseded"):
             return {"success": True, "documentId": document_id, "status": upload.status}
-        claimed = await prisma.documentupload.update_many(where={"id": upload.id, "status": {"in": ["pending", "failed"]}}, data={"status": "queued"})
-        if not claimed:
-            raise HTTPException(status_code=409, detail="Upload already submitted")
-        try:
-            await publish_document_job(document_id, document.botId, user.id, upload.id)
-        except Exception:
-            await prisma.documentupload.update_many(where={"id": upload.id, "status": "queued"}, data={"status": "pending"})
-            raise HTTPException(status_code=503, detail="Could not queue document. Please retry.") from None
+        async with prisma.tx() as tx:
+            claimed = await tx.documentupload.update_many(where={"id": upload.id, "status": {"in": ["pending", "failed"]}}, data={"status": "queued"})
+            if not claimed:
+                raise HTTPException(status_code=409, detail="Upload already submitted")
+            await enqueue_document_job(tx, document_id, document.botId, user.id, upload.id)
     elif payload and payload.uploadId:
         raise HTTPException(status_code=404, detail="Upload not found")
     else:
         # Jobs/uploads created before the incremental-indexing migration.
         if document.status == "ready":
             return {"success": True, "documentId": document_id, "status": "ready"}
-        await publish_document_job(document_id, document.botId, user.id)
+        async with prisma.tx() as tx:
+            await enqueue_document_job(tx, document_id, document.botId, user.id)
     return {"success": True, "documentId": document_id, "status": "queued"}

@@ -143,53 +143,27 @@ async def start_chat(sid, data):
 
 @sio.event
 async def resume_chat(sid, data):
-    """Resume an existing chat session (when user clicks a conversation in sidebar)."""
-    session = await sio.get_session(sid)
+    """Resume only sessions belonging to the connected bot and active API key."""
     try:
+        session = await sio.get_session(sid)
         await limits.control(session)
+        session_id = data.get("sessionId") if isinstance(data, dict) else None
+        if not isinstance(session_id, str) or not session_id or len(session_id) > 100:
+            raise LimitDenied("invalid_session", "A valid sessionId is required.", 0)
+        chat_session = await prisma.chatsession.find_unique(where={"id": session_id})
+        if not chat_session or chat_session.botId != session["botId"] or chat_session.apiKeyId != session["apiKeyId"]:
+            raise LimitDenied("invalid_session", "This conversation is unavailable.", 0)
+        old_room = session.get("room")
+        if old_room:
+            await sio.leave_room(sid, old_room)
+        room = f"chat:{chat_session.id}"
+        await sio.enter_room(sid, room)
+        await sio.save_session(sid, {**session, "sessionId": chat_session.id, "room": room})
+        await sio.emit("chat_resumed", {"sessionId": chat_session.id}, to=sid)
     except LimitDenied as error:
         await reject(sid, error)
-        return
     except Exception:
         await reject(sid, LimitDenied("unavailable", "Chat is temporarily unavailable.", 5))
-        return
-    session_id = data.get("sessionId") if isinstance(data, dict) else None
-
-    if not session_id:
-        await sio.emit("error", {"message": "sessionId is required"}, to=sid)
-        return
-
-    # Verify the session exists and belongs to this bot
-    chat_session = await prisma.chatsession.find_unique(
-        where={"id": session_id}
-    )
-
-    if not chat_session or chat_session.botId != session["botId"] or chat_session.apiKeyId != session["apiKeyId"]:
-        await sio.emit("error", {"message": "Invalid session"}, to=sid)
-        return
-
-    # Leave old room if any
-    old_room = session.get("room")
-    if old_room:
-        await sio.leave_room(sid, old_room)
-
-    # Join new room
-    room = f"chat:{chat_session.id}"
-    await sio.enter_room(sid, room)
-
-    # Save session context
-    await sio.save_session(sid, {
-        **session,
-        "sessionId": chat_session.id,
-        "room": room,
-    })
-
-    # Notify client
-    await sio.emit(
-        "chat_resumed",
-        {"sessionId": chat_session.id},
-        to=sid,
-    )
 
 
 @sio.event

@@ -25,9 +25,9 @@ class DocumentAPITests(unittest.TestCase):
         self.addCleanup(benchmark_patch.stop)
         self.db = ns(bot=ns(find_unique=AsyncMock(return_value=ns(id='bot', userId='user'))),
             document=ns(find_unique=AsyncMock(return_value=ns(id='doc', botId='bot', bot=ns(userId='user'), status='ready')),
-                        create=AsyncMock(), find_many=AsyncMock(return_value=[])),
+                        create=AsyncMock(), find_many=AsyncMock(return_value=[]), count=AsyncMock(return_value=0)),
             documentupload=ns(create=AsyncMock(), find_unique=AsyncMock(), find_first=AsyncMock(return_value=None),
-                              update_many=AsyncMock(return_value=1)))
+                              update_many=AsyncMock(return_value=1)), query_raw=AsyncMock(), execute_raw=AsyncMock())
         @asynccontextmanager
         async def tx():
             yield self.db
@@ -35,6 +35,7 @@ class DocumentAPITests(unittest.TestCase):
         self.publish = AsyncMock()
         modules = patch.dict(sys.modules, {
             'src.db': ns(prisma=self.db),
+            'src.env': ns(env=ns(MAX_DOCUMENTS_PER_BOT=50)),
             'src.deps.auth': ns(get_current_user=lambda: ns(id='user')),
             'src.utils.s3': ns(generate_presigned_upload_url=lambda key: 'https://example.invalid/upload'),
             'src.producer.producer': ns(publish_document_job=self.publish),
@@ -65,6 +66,13 @@ class DocumentAPITests(unittest.TestCase):
         self.assertNotEqual(response.json()['documentId'], 'doc')
         self.db.document.create.assert_awaited_once()
 
+    def test_document_quota_rejects_new_documents_but_allows_replacements(self):
+        self.db.document.count.return_value = 50
+        response = self.client.post('/bots/bot/documents/upload-url', json={**self.body, 'documentId': None})
+        self.assertEqual(response.status_code, 409)
+        self.db.document.create.assert_not_awaited()
+        self.assertEqual(self.client.post('/bots/bot/documents/upload-url', json=self.body).status_code, 200)
+
     def test_other_users_and_documents_cannot_be_updated(self):
         self.db.bot.find_unique.return_value.userId = 'other'
         self.assertEqual(self.client.post('/bots/bot/documents/upload-url', json=self.body).status_code, 404)
@@ -80,17 +88,20 @@ class DocumentAPITests(unittest.TestCase):
         self.publish.assert_not_awaited()
         upload.documentId = 'doc'
         self.assertEqual(self.client.post('/documents/doc/complete', json={'uploadId': 'upload'}).status_code, 200)
-        self.publish.assert_awaited_once_with('doc', 'bot', 'user', 'upload')
+        self.db.execute_raw.assert_awaited_once()
+        self.assertIn('"upload_id": "upload"', self.db.execute_raw.await_args.args[2])
         upload.status = 'ready'
         self.assertEqual(self.client.post('/documents/doc/complete', json={'uploadId': 'upload'}).status_code, 200)
-        self.assertEqual(self.publish.await_count, 1)
+        self.assertEqual(self.db.execute_raw.await_count, 1)
 
-    def test_queue_failure_can_be_retried(self):
+    def test_queue_intent_is_persisted_without_calling_broker(self):
         self.db.documentupload.find_unique.return_value = ns(id='upload', documentId='doc', status='pending')
         self.publish.side_effect = RuntimeError('broker unavailable')
         response = self.client.post('/documents/doc/complete', json={'uploadId': 'upload'})
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(self.db.documentupload.update_many.await_args.kwargs['data']['status'], 'pending')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.db.documentupload.update_many.await_args.kwargs['data']['status'], 'queued')
+        self.db.execute_raw.assert_awaited_once()
+        self.publish.assert_not_awaited()
 
     def test_rejects_empty_large_and_non_pdf_files(self):
         for body in ({**self.body, 'fileSize': 0}, {**self.body, 'fileSize': 51 * 1024 * 1024},

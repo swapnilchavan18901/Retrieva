@@ -1,22 +1,2 @@
-# Hosted OpenAI embeddings billed through OpenRouter
-httpx>=0.28.1,<1.0
-
-# PDF processing
-pypdf>=5.0.0
-
-# Vector database
-qdrant-client>=1.16.2
-
-# AWS
-boto3>=1.34.0
-botocore>=1.34.0
-
-# Message queue
-aio-pika>=9.0.0
-
-# Database
-prisma>=0.11.0
-
-# Environment management
-pydantic-settings>=2.0.0
-python-dotenv>=1.0.0
+# API and worker share one audited, pinned runtime dependency set.
+-r ../requirements.txt

@@ -104,6 +104,13 @@ class PostgresLimitTests(unittest.IsolatedAsyncioTestCase):
             await self.guard.acquire(self.session)
         self.assertEqual(caught.exception.code, 'unauthorized')
 
+    async def test_revoked_key_cannot_create_or_resume_sessions(self):
+        await self.guard.control(self.session)
+        await self.db.apikey.update(where={'id': self.key.id}, data={'isActive': False})
+        with self.assertRaises(LimitDenied) as caught:
+            await self.guard.control(self.session)
+        self.assertEqual(caught.exception.code, 'unauthorized')
+
     async def test_ip_message_and_session_limits_survive_new_guard(self):
         for _ in range(10):
             admission = await self.guard.acquire(self.session)

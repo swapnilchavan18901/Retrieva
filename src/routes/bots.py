@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from src.db import prisma
 from src.schemas.bots import BotCreateRequest, BotUpdateRequest
 from src.deps.auth import get_current_user
+from src.env import env
+from src.resource_limits import enforce_quota
 
 router = APIRouter(prefix="/bots", tags=["bots"])
 
@@ -10,16 +12,16 @@ async def create_bot(
     data: BotCreateRequest,
     user = Depends(get_current_user)
 ):
-    print(f"userishere: {user}")
-
-    bot = await prisma.bot.create(
-        data={
-            "name": data.name,
-            "description": data.description,
-            "systemPrompt": data.systemPrompt,
-            "userId": user.id,
-        }
-    )
+    async with prisma.tx() as tx:
+        await enforce_quota(tx, "Assistant", user.id, "bot", {"userId": user.id}, env.MAX_BOTS_PER_USER)
+        bot = await tx.bot.create(
+            data={
+                "name": data.name,
+                "description": data.description,
+                "systemPrompt": data.systemPrompt,
+                "userId": user.id,
+            }
+        )
 
     return {
         "id": bot.id,
@@ -51,7 +53,7 @@ async def update_bot(
 
     updated = await prisma.bot.update(
         where={"id": bot_id},
-        data=data.dict(exclude_unset=True),
+        data=data.model_dump(exclude_unset=True),
     )
 
     return updated
@@ -67,6 +69,10 @@ async def delete_bot(
     if not bot or bot.userId != user.id:
         raise HTTPException(status_code=404, detail="Bot not found")
 
-    await prisma.bot.delete(where={"id": bot_id})
+    async with prisma.tx() as tx:
+        # These history relations do not cascade from Bot in the Prisma schema.
+        await tx.chatrequest.delete_many(where={"botId": bot_id})
+        await tx.chatsession.delete_many(where={"botId": bot_id})
+        await tx.bot.delete(where={"id": bot_id})
 
     return {"success": True}

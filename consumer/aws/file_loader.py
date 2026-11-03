@@ -1,21 +1,25 @@
+"""Download and extract PDFs with bounded network, disk, and text usage."""
 
-import boto3
-import tempfile
 import asyncio
 import os
-from pypdf import PdfReader
+import tempfile
+from dataclasses import dataclass, field
+from typing import Any
+
+import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from pypdf import PdfReader
+
 from consumer.consumer_env import env
+from shared.document_limits import MAX_EXTRACTED_CHARACTERS, MAX_FILE_BYTES, MAX_PDF_PAGES
 
 
+@dataclass
 class Document:
-    """Simple Document class to replace langchain Document"""
-    def __init__(self, page_content: str, metadata: dict = None):
-        self.page_content = page_content
-        self.metadata = metadata or {}
+    page_content: str
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-# Match the exact S3 configuration from src/utils/s3.py
+
 s3 = boto3.client(
     "s3",
     region_name=env.AWS_REGION,
@@ -23,116 +27,56 @@ s3 = boto3.client(
     aws_secret_access_key=env.AWS_SECRET_ACCESS_KEY,
     aws_session_token=env.AWS_SESSION_TOKEN,
     endpoint_url=f"https://s3.{env.AWS_REGION}.amazonaws.com",
-    config=Config(signature_version="s3v4"),
+    config=Config(signature_version="s3v4", connect_timeout=5, read_timeout=30, retries={"max_attempts": 3}),
 )
 BUCKET = env.AWS_S3_BUCKET
 
-print("=" * 60)
-print("🔧 AWS S3 Consumer Configuration Loaded:")
-print(f"   Region: {env.AWS_REGION}")
-print(f"   Bucket: {BUCKET}")
-print(f"   Endpoint: https://s3.{env.AWS_REGION}.amazonaws.com")
-print("=" * 60)
 
 def _load_pdf_from_s3_sync(key: str) -> tuple[list[Document], str]:
-    """Synchronous helper for loading PDF from S3
-    Returns: (documents, temp_file_path)
-    """
-    print(f"\n{'='*60}")
-    print(f"🔍 S3 Download Request:")
-    print(f"   Bucket: {BUCKET}")
-    print(f"   Key: {key}")
-    print(f"   Full URL: https://s3.{env.AWS_REGION}.amazonaws.com/{BUCKET}/{key}")
-    print(f"{'='*60}\n")
-    
-    # First, try to verify bucket access and find the file
+    response = s3.get_object(Bucket=BUCKET, Key=key)
+    stream = response["Body"]
+    tmp_path = None
     try:
-        print("🔎 Checking if file exists...")
-        # Try to head_object to check if file exists
-        s3.head_object(Bucket=BUCKET, Key=key)
-        print(f"✅ File exists in S3!")
-        
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', '')
-        print(f"⚠️ head_object failed with error: {error_code}")
-        
-        # Try to list objects with this prefix
-        try:
-            print(f"\n🔎 Searching for files with prefix: {key}")
-            response = s3.list_objects_v2(Bucket=BUCKET, Prefix=key, MaxKeys=1)
-            
-            if 'Contents' in response and len(response['Contents']) > 0:
-                print(f"✅ Found file: {response['Contents'][0]['Key']}")
-            else:
-                print(f"❌ No files found with prefix: {key}")
-                
-                # Get parent directory to see what's there
-                parent_prefix = "/".join(key.split("/")[:-1]) + "/"
-                print(f"\n🔎 Checking parent directory: {parent_prefix}")
-                parent_response = s3.list_objects_v2(Bucket=BUCKET, Prefix=parent_prefix, MaxKeys=10)
-                
-                if 'Contents' in parent_response:
-                    print(f"📂 Files in parent directory:")
-                    for obj in parent_response['Contents']:
-                        print(f"   - {obj['Key']}")
-                else:
-                    print(f"❌ Parent directory is empty")
-                    
-                    # Try to list root of bucket
-                    print(f"\n🔎 Sample files from bucket root:")
-                    root_response = s3.list_objects_v2(Bucket=BUCKET, MaxKeys=10)
-                    if 'Contents' in root_response:
-                        for obj in root_response['Contents']:
-                            print(f"   - {obj['Key']}")
-                    else:
-                        print(f"   (bucket is empty)")
-                        
-        except Exception as list_err:
-            print(f"❌ Error listing bucket: {list_err}")
-        
-        raise e
-    
-    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp_path = tmp.name
-        
-        try:
-            print(f"⬇️  Downloading to: {tmp_path}")
-            s3.download_file(BUCKET, key, tmp_path)
-            print(f"✅ Successfully downloaded!")
-            
-            print(f"📖 Loading PDF...")
-            reader = PdfReader(tmp_path)
-            
-            # Extract text from each page and create Document objects
-            docs = []
-            for page_num, page in enumerate(reader.pages):
-                # Preserve blank lines/paragraph spacing for structure-aware chunking.
-                text = page.extract_text(extraction_mode="layout")
-                doc = Document(
-                    page_content=text,
-                    metadata={
-                        "page": page_num + 1,  # 1-indexed page numbers
-                        "source": key,
-                        "total_pages": len(reader.pages)
-                    }
-                )
-                docs.append(doc)
-            
-            # Count pages with content
-            pages_with_content = sum(1 for doc in docs if doc.page_content and doc.page_content.strip())
-            print(f"✅ PDF loaded: {len(docs)} pages ({pages_with_content} have text content)")
-            
-            # Return docs AND temp file path so it can be cleaned up later
-            return docs, tmp_path
-        except Exception as e:
-            # Clean up temp file on error
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-            print(f"❌ Download failed: {e}")
-            raise e
+        if not 0 < response["ContentLength"] <= MAX_FILE_BYTES:
+            raise ValueError("PDF must be between 1 byte and 50 MiB")
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temporary:
+            tmp_path = temporary.name
+            size = 0
+            while chunk := stream.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_FILE_BYTES:
+                    raise ValueError("PDF exceeds 50 MiB")
+                temporary.write(chunk)
+        if size != response["ContentLength"]:
+            raise ValueError("Incomplete PDF download")
+        # Keep the reader's file descriptor scoped, including parsing failures.
+        with open(tmp_path, "rb") as pdf_file:
+            if not pdf_file.read(1024).lstrip().startswith(b"%PDF-"):
+                raise ValueError("Invalid PDF header")
+            pdf_file.seek(0)
+            reader = PdfReader(pdf_file)
+            if reader.is_encrypted:
+                raise ValueError("Encrypted PDFs are not supported")
+            total_pages = len(reader.pages)
+            if not 0 < total_pages <= MAX_PDF_PAGES:
+                raise ValueError(f"PDF must contain between 1 and {MAX_PDF_PAGES} pages")
+            docs, characters = [], 0
+            for page_num, page in enumerate(reader.pages, start=1):
+                text = page.extract_text(extraction_mode="layout") or ""
+                characters += len(text)
+                if characters > MAX_EXTRACTED_CHARACTERS:
+                    raise ValueError("PDF contains too much extracted text")
+                docs.append(Document(text, {"page": page_num, "source": key, "total_pages": total_pages}))
+            if not any(doc.page_content.strip() for doc in docs):
+                raise ValueError("PDF has no extractable text; scanned documents need OCR")
+        return docs, tmp_path
+    except BaseException:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+    finally:
+        stream.close()
+
 
 async def load_pdf_from_s3(key: str) -> tuple[list[Document], str]:
-    """Async wrapper for loading PDF from S3 using thread pool
-    Returns: (documents, temp_file_path)
-    """
     return await asyncio.to_thread(_load_pdf_from_s3_sync, key)

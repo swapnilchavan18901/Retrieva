@@ -1,32 +1,39 @@
-from pydantic_settings import BaseSettings
 from pathlib import Path
-from pydantic import Field
 
-class Env(BaseSettings):
-    DATABASE_URL: str
-    JWT_SECRET: str
+from typing import Literal
 
-    # optional defaults
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+from pydantic import Field, model_validator
+from pydantic_settings import SettingsConfigDict
+
+from shared.settings import ServiceSettings
+
+
+class Env(ServiceSettings):
+    ENVIRONMENT: Literal["development", "test", "production"] = "development"
+    DEMO_ENABLED: bool = False
+    HTTP_REQUESTS_PER_MINUTE: int = Field(default=120, ge=1, le=10_000)
+    MAX_BOTS_PER_USER: int = Field(default=10, ge=1)
+    MAX_DOCUMENTS_PER_BOT: int = Field(default=50, ge=1)
+    MAX_API_KEYS_PER_BOT: int = Field(default=10, ge=1)
     CORS_ORIGINS: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
-    AWS_REGION: str = Field(min_length=1)
-    AWS_S3_BUCKET: str = Field(min_length=1)
-    AWS_ACCESS_KEY_ID: str = Field(min_length=1)
-    AWS_SECRET_ACCESS_KEY: str = Field(min_length=1)
-    AWS_SESSION_TOKEN: str | None = None
-    RABBIT_MQ_URL: str
-    RABBIT_MQ_API_KEY: str
+    SOCKET_CORS_ORIGINS: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
     SARVAM_API_KEY: str
-    OPENROUTER_API_KEY: str
     SARVAM_BASE_URL: str = "https://api.sarvam.ai/v2"
     SARVAM_MODEL: str = "sarvam-105b"
-    QDRANT_DB_CLUSTER_URL:str
-    QDRANT_DB_API_KEY:str
 
-    class Config:
-        env_file = Path(__file__).resolve().parents[1] / ".env"
-        case_sensitive = True
-        extra = "ignore"  # Allow obsolete keys and consumer-only settings.
-        hide_input_in_errors = True
+    model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[1] / ".env")
+
+    @model_validator(mode="after")
+    def validate_production_settings(self):
+        if self.ENVIRONMENT == "production":
+            if len(self.JWT_SECRET) < 32 or "replace-with" in self.JWT_SECRET.lower():
+                raise ValueError("Production requires a random JWT_SECRET of at least 32 characters")
+            if self.DEMO_ENABLED:
+                raise ValueError("Disable shared demo access in production")
+            for origins in (self.CORS_ORIGINS, self.SOCKET_CORS_ORIGINS):
+                if not origins or any(not origin.startswith("https://") or "*" in origin for origin in origins):
+                    raise ValueError("Production requires explicit HTTPS browser origins")
+        return self
+
 
 env = Env()

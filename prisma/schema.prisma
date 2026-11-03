@@ -230,3 +230,13 @@ model ChatLimitLease {
   reservedTokens Int      @default(0)
   @@index([kind, expiresAt])
 }
+
+model DocumentJobOutbox {
+  id            String   @id
+  payload       Json
+  attempts      Int      @default(0)
+  nextAttemptAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([nextAttemptAt])
+}

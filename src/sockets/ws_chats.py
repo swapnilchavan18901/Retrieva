@@ -1,9 +1,10 @@
 import socketio
+from src.env import env
 
 sio = socketio.AsyncServer(
     async_mode="asgi",
     max_http_buffer_size=32_768,
-    cors_allowed_origins="*",
+    cors_allowed_origins=env.SOCKET_CORS_ORIGINS,
 )
 
 socket_app = socketio.ASGIApp(sio)

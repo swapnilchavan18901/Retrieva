@@ -2,6 +2,8 @@ import json
 import asyncio
 import aio_pika
 import os
+import logging
+from pypdf.errors import PdfReadError
 from datetime import timedelta
 from shared.benchmark import benchmark_run
 from botocore.exceptions import ClientError
@@ -13,6 +15,9 @@ from consumer.consumer_env import env
 
 RABBIT_MQ_URL = env.RABBIT_MQ_URL
 QUEUE = "document_process_queue"
+DEAD_LETTER_QUEUE = "document_process_dead_letter_queue"
+MAX_JOB_RETRIES = 3
+logger = logging.getLogger(__name__)
 
 
 async def lock_document(tx, document_id):
@@ -89,55 +94,51 @@ async def _process_document(payload: dict):
         raise
 
 
+async def publish_retry(message, queue, attempt):
+    connection = await aio_pika.connect_robust(RABBIT_MQ_URL, timeout=10)
+    async with connection:
+        channel = await connection.channel(publisher_confirms=True)
+        await channel.declare_queue(queue, durable=True)
+        await channel.default_exchange.publish(
+            aio_pika.Message(
+                body=message.body,
+                headers={**(message.headers or {}), "x-retrieva-retry": attempt},
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                content_type="application/json",
+                message_id=message.message_id,
+            ),
+            routing_key=queue, timeout=10,
+        )
+
+
 async def on_message(message: aio_pika.IncomingMessage):
-    """
-    Handle incoming messages with proper error handling.
-    Non-recoverable errors (404, document not found, corrupted files) will NOT be requeued.
-    """
-    should_requeue = False
-    
     try:
         payload = json.loads(message.body)
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid document job")
         await process_document(payload)
-        # ACK happens automatically if no exception
+    except Exception as error:
+        attempt = (message.headers or {}).get("x-retrieva-retry", 0)
+        if type(attempt) is not int or not 0 <= attempt <= MAX_JOB_RETRIES:
+            attempt = MAX_JOB_RETRIES
+        missing_object = isinstance(error, ClientError) and error.response.get("Error", {}).get("Code") in {"404", "NoSuchKey"}
+        permanent = isinstance(error, (ValueError, PdfReadError)) or missing_object
+        exhausted = permanent or attempt >= MAX_JOB_RETRIES
+        queue = DEAD_LETTER_QUEUE if exhausted else QUEUE
+        logger.warning("Document job failed error_type=%s attempt=%s dead_letter=%s", type(error).__name__, attempt, exhausted)
+        try:
+            if not exhausted:
+                await asyncio.sleep(2 ** attempt)
+            # Confirm the replacement before ACK; worker processing is idempotent.
+            await publish_retry(message, queue, attempt + 1)
+        except Exception as publish_error:
+            logger.error("Job recovery publish failed error_type=%s", type(publish_error).__name__)
+            await asyncio.sleep(2)
+            await message.reject(requeue=True)
+            return
         await message.ack()
-        
-    except ClientError as e:
-        # S3 errors - check if it's a 404 (file not found)
-        error_code = e.response.get('Error', {}).get('Code', '')
-        if error_code == '404' or '404' in str(e):
-            print(f"❌ File not found in S3 (404). Not requeuing. Error: {e}")
-            # Don't requeue - file doesn't exist
-            await message.reject(requeue=False)
-        else:
-            print(f"⚠️ S3 error (will retry): {e}")
-            should_requeue = True
-            await message.reject(requeue=True)
-            
-    except ValueError as e:
-        # ValueError is used for validation errors (empty PDFs, no text content, etc.)
-        error_msg = str(e)
-        print(f"❌ Validation error. Not requeuing. Error: {error_msg}")
-        await message.reject(requeue=False)
-        
-    except Exception as e:
-        error_msg = str(e).lower()
-        # Check for non-recoverable errors
-        if "not found" in error_msg:
-            print(f"❌ Resource not found. Not requeuing. Error: {e}")
-            await message.reject(requeue=False)
-        elif any(x in error_msg for x in ["invalid pdf", "pdf header", "eof marker", "stream has ended unexpectedly"]):
-            print(f"❌ Corrupted or invalid PDF file. Not requeuing. Error: {e}")
-            print(f"⚠️  The file in S3 is corrupted. Check your upload process!")
-            await message.reject(requeue=False)
-        elif any(x in error_msg for x in ["empty update request", "no extractable text"]):
-            print(f"❌ PDF has no text content (likely scanned/image-based). Not requeuing. Error: {e}")
-            print(f"⚠️  Consider implementing OCR for scanned PDFs!")
-            await message.reject(requeue=False)
-        else:
-            print(f"⚠️ Error processing message (will retry): {e}")
-            should_requeue = True
-            await message.reject(requeue=True)
+    else:
+        await message.ack()
 
 
 async def start_consumer():
@@ -147,7 +148,7 @@ async def start_consumer():
     print("✅ Prisma connected")
 
     try:
-        connection = await aio_pika.connect_robust(RABBIT_MQ_URL)
+        connection = await aio_pika.connect_robust(RABBIT_MQ_URL, timeout=10)
 
         async with connection:
             channel = await connection.channel()
