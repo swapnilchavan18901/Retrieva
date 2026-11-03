@@ -172,9 +172,17 @@ The existing OpenAI SDK connects to Sarvam's OpenAI-compatible endpoint;
 chat requests are sent to Sarvam. No OpenAI key or credits are required.
 The `openai` Python dependency is only the compatible client for Sarvam chat.
 Both services read `Retrieva/.env`, independent of the working directory.
-AWS settings come only from that file (or explicit settings constructor arguments),
-so unrelated shell AWS credentials/session tokens cannot override them. Other
+If that file contains any AWS settings, its AWS configuration is authoritative,
+so unrelated shell AWS credentials/session tokens cannot override it. Without
+AWS settings in the file, both services accept AWS process environment variables,
+supporting deployments without a local `.env`. Other
 process environment values retain their usual precedence over the file.
+
+On Render, add `AWS_REGION`, `AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, and
+`AWS_SECRET_ACCESS_KEY` under the backend service's **Environment** settings,
+then save and deploy. Set `AWS_SESSION_TOKEN` only for temporary credentials.
+Configure these on the consumer service too if deployed separately. Keep real
+credentials out of the repository.
 
 See [LAUNCH.md](LAUNCH.md) for production configuration, rate/resource limits,
 the document outbox migration, deployment checks and remaining commercial gates.

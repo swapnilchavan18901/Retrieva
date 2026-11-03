@@ -39,11 +39,18 @@ class ServiceSettings(BaseSettings):
         def without_aws(source: PydanticBaseSettingsSource) -> dict[str, Any]:
             return {key: value for key, value in source().items() if not key.startswith("AWS_")}
 
-        # Keep AWS credentials and their optional session token from one source.
+        def deployment_env() -> dict[str, Any]:
+            # A local AWS configuration is authoritative, including an absent
+            # session token. Otherwise allow hosts such as Render to inject AWS.
+            if any(key.startswith("AWS_") for key in dotenv_settings()):
+                return without_aws(env_settings)
+            return env_settings()
+
+        # Never mix local AWS credentials with a process session token.
         # Non-AWS process settings retain their normal precedence over .env.
         return (
             init_settings,
-            lambda: without_aws(env_settings),
+            deployment_env,
             dotenv_settings,
             lambda: without_aws(file_secret_settings),
         )

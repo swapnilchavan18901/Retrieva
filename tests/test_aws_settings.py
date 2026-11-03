@@ -36,7 +36,8 @@ class AWSSettingsTests(unittest.TestCase):
             target = root / relative_path
             target.parent.mkdir()
             shutil.copyfile(ROOT / relative_path, target)
-            (root / ".env").write_text("\n".join(f"{key}={value}" for key, value in values.items()))
+            if values is not None:
+                (root / ".env").write_text("\n".join(f"{key}={value}" for key, value in values.items()))
             with patch.dict(os.environ, {
                 "AWS_ACCESS_KEY_ID": "shell-access-key",
                 "AWS_SECRET_ACCESS_KEY": "shell-secret-key",
@@ -47,6 +48,23 @@ class AWSSettingsTests(unittest.TestCase):
                 **(process_values or {}),
             }, clear=True):
                 return runpy.run_path(str(target))["env"]
+
+    def test_both_services_accept_deployment_environment_without_dotenv(self):
+        for path in SETTINGS_FILES:
+            with self.subTest(path=path):
+                settings = self.load_settings(path, None, VALUES)
+                for key, value in VALUES.items():
+                    if key.startswith("AWS_"):
+                        self.assertEqual(getattr(settings, key), value)
+                self.assertEqual(settings.AWS_SESSION_TOKEN, "shell-token")
+
+    def test_dotenv_without_aws_allows_deployment_aws(self):
+        for path in SETTINGS_FILES:
+            with self.subTest(path=path):
+                values = {key: value for key, value in VALUES.items() if not key.startswith("AWS_")}
+                settings = self.load_settings(path, values)
+                self.assertEqual(settings.AWS_ACCESS_KEY_ID, "shell-access-key")
+                self.assertEqual(settings.AWS_SESSION_TOKEN, "shell-token")
 
     def test_both_services_use_file_aws_settings(self):
         for path in SETTINGS_FILES:
