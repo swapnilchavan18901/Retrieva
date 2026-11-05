@@ -10,7 +10,6 @@ from shared.settings import ServiceSettings
 
 class Env(ServiceSettings):
     ENVIRONMENT: Literal["development", "test", "production"] = "development"
-    DEMO_ENABLED: bool = False
     HTTP_REQUESTS_PER_MINUTE: int = Field(default=120, ge=1, le=10_000)
     MAX_BOTS_PER_USER: int = Field(default=10, ge=1)
     MAX_DOCUMENTS_PER_BOT: int = Field(default=50, ge=1)
@@ -28,8 +27,6 @@ class Env(ServiceSettings):
         if self.ENVIRONMENT == "production":
             if len(self.JWT_SECRET) < 32 or "replace-with" in self.JWT_SECRET.lower():
                 raise ValueError("Production requires a random JWT_SECRET of at least 32 characters")
-            if self.DEMO_ENABLED:
-                raise ValueError("Disable shared demo access in production")
             for origins in (self.CORS_ORIGINS, self.SOCKET_CORS_ORIGINS):
                 if not origins or any(not origin.startswith("https://") or "*" in origin for origin in origins):
                     raise ValueError("Production requires explicit HTTPS browser origins")

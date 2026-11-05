@@ -1,5 +1,6 @@
 """Exercise public demo login without a database or production credentials."""
 from pathlib import Path
+import os
 import runpy
 import sys
 from types import SimpleNamespace
@@ -14,24 +15,25 @@ class DemoAuthTests(unittest.TestCase):
     def setUp(self):
         self.users = SimpleNamespace(find_unique=AsyncMock(), upsert=AsyncMock())
         self.sign = Mock(return_value="demo-session-token")
-        self.settings = SimpleNamespace(DEMO_ENABLED=True)
         with patch.dict(sys.modules, {
-            "src.env": SimpleNamespace(env=self.settings),
             "src.db": SimpleNamespace(prisma=SimpleNamespace(user=self.users)),
             "src.utils.jwt": SimpleNamespace(create_access_token=self.sign),
         }):
             module = runpy.run_path(str(Path(__file__).resolve().parents[1] / "src/routes/auth.py"))
+        self.demo_enabled = module["DEMO_ENABLED"]
         self.demo = SimpleNamespace(id=module["DEMO_USER_ID"], email=module["DEMO_USER_EMAIL"], role="user")
         app = FastAPI()
         app.include_router(module["router"])
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
 
-    def test_demo_is_unavailable_when_disabled(self):
-        self.settings.DEMO_ENABLED = False
-        self.assertEqual(self.client.post("/auth/demo").status_code, 404)
-        self.users.find_unique.assert_not_awaited()
-        self.sign.assert_not_called()
+    def test_demo_is_enabled_by_constant_even_with_obsolete_environment_flags(self):
+        self.assertTrue(self.demo_enabled)
+        self.users.find_unique.return_value = self.demo
+        with patch.dict(os.environ, {"ENVIRONMENT": "production", "DEMO_ENABLED": "false"}):
+            response = self.client.post("/auth/demo")
+        self.assertEqual(response.status_code, 200)
+        self.sign.assert_called_once_with({"sub": self.demo.id})
 
     def test_first_visit_creates_separate_non_admin_account_and_signs_in(self):
         self.users.find_unique.return_value = None

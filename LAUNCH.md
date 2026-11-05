@@ -11,8 +11,8 @@ before accepting customer documents or charging customers.
 | REST requests | 120 per IP per 60-second window, configurable |
 | Login | 10 per IP per minute; 20 per normalized email per 15 minutes across IPs |
 | Registration | 5 per IP per hour |
-| Shared demo | Disabled by default; production configuration rejects enabling it |
-| Demo attempts | 5 per IP per minute when explicitly enabled |
+| Shared demo | Enabled in every deployment by code constants; shared sample workspace |
+| Demo attempts | 5 per IP per minute |
 | Upload URL creation | 15 per IP per minute |
 | REST JSON bodies | Maximum 64 KiB; chunked bodies checked; 15-second body timeout |
 | Resource caps | 10 bots per account, 50 documents per bot, 10 active API keys per bot |
@@ -44,10 +44,11 @@ provider logs. Production disables API documentation routes.
 
 ## Configure and deploy
 
-1. Use separate production PostgreSQL, S3, RabbitMQ and Qdrant resources. Keep the
-   shared demo on a separate development deployment with sample files only.
+1. Use separate production PostgreSQL, S3, RabbitMQ and Qdrant resources. Demo
+   access is enabled in every deployment, including production. It uses a dedicated
+   shared non-admin account; use sample files in that workspace.
 2. Copy `env.example` to a protected `Retrieva/.env` and replace placeholders.
-   Set `ENVIRONMENT=production`, `DEMO_ENABLED=false`, a random `JWT_SECRET` of at
+   Set `ENVIRONMENT=production`, a random `JWT_SECRET` of at
    least 32 characters, and explicit HTTPS origins in `CORS_ORIGINS` and
    `SOCKET_CORS_ORIGINS`. Add approved customer embedding domains to the latter.
    AWS settings, including an optional session token, come from this file rather
@@ -87,8 +88,8 @@ provider logs. Production disables API documentation routes.
    or expose a proxy-trusting backend directly to the Internet. Apply HTTPS/HSTS
    at the edge. Apply worker memory/CPU limits: PDF parsing still processes
    untrusted files and page/text checks do not prevent every decompression attack.
-7. Build the frontend with `NEXT_PUBLIC_API_URL` pointing to the production API
-   and `NEXT_PUBLIC_DEMO_ENABLED=false`. Browser public variables are build-time
+7. Build the frontend with `NEXT_PUBLIC_API_URL` pointing to the production API.
+   Demo visibility is controlled by a code constant. Browser public variables are build-time
    values. Run `pnpm lint`, `pnpm typecheck`, `pnpm build`, then `pnpm start`.
    Deploy frontend and backend together for the API-key creation ID response.
 8. Restrict S3 bucket access and CORS to required operations/origins. Set upload
@@ -169,7 +170,7 @@ Validated locally on November 3, 2026: 137 backend tests passed in a clean Pytho
 environment, including PostgreSQL concurrency/delivery tests; 9 frontend tests,
 zero-warning lint, TypeScript and the production build passed. Prisma validated
 and all 7 migrations applied to disposable PostgreSQL. Production login/signup
-pages rendered in the browser with shared demo access hidden. Audits of the
+pages rendered in the browser. Audits of the
 backend lock and frontend production dependency lock reported no known
 vulnerabilities. Live paid-provider, email, payment and production infrastructure
 flows were not exercised. Temporary test services were stopped afterward.

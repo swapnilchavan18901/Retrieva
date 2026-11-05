@@ -95,24 +95,35 @@ class AWSSettingsTests(unittest.TestCase):
                         with self.assertRaises(ValidationError):
                             self.load_settings(path, values)
 
-    def test_production_rejects_weak_secrets_demo_access_and_wildcard_origins(self):
+    def test_production_rejects_weak_secrets_and_wildcard_origins(self):
         valid = {
             'ENVIRONMENT': 'production', 'JWT_SECRET': 'a-random-test-secret-that-is-long-enough',
             'CORS_ORIGINS': '["https://app.example.com"]',
-            'SOCKET_CORS_ORIGINS': '["https://customer.example.com"]', 'DEMO_ENABLED': 'false',
+            'SOCKET_CORS_ORIGINS': '["https://customer.example.com"]',
         }
         settings = self.load_settings('src/env.py', VALUES, valid)
-        self.assertFalse(settings.DEMO_ENABLED)
-        for invalid in ({'JWT_SECRET': 'short'}, {'DEMO_ENABLED': 'true'}, {'CORS_ORIGINS': '["*"]'},
+        self.assertEqual(settings.ENVIRONMENT, 'production')
+        for invalid in ({'JWT_SECRET': 'short'}, {'CORS_ORIGINS': '["*"]'},
                         {'SOCKET_CORS_ORIGINS': '["http://customer.example.com"]'}):
             with self.subTest(invalid=invalid), self.assertRaises(ValidationError):
                 self.load_settings('src/env.py', VALUES, {**valid, **invalid})
 
-    def test_demo_is_disabled_by_default_and_invalid_rate_caps_are_rejected(self):
-        self.assertFalse(self.load_settings('src/env.py', VALUES).DEMO_ENABLED)
+    def test_invalid_rate_caps_are_rejected(self):
         for invalid in ('0', '-1', '10001'):
             with self.subTest(invalid=invalid), self.assertRaises(ValidationError):
                 self.load_settings('src/env.py', VALUES, {'HTTP_REQUESTS_PER_MINUTE': invalid})
+
+    def test_production_does_not_use_a_demo_environment_setting(self):
+        production = {
+            'ENVIRONMENT': 'production', 'JWT_SECRET': 'a-random-test-secret-that-is-long-enough',
+            'CORS_ORIGINS': '["https://app.example.com"]',
+            'SOCKET_CORS_ORIGINS': '["https://customer.example.com"]',
+        }
+        for obsolete_flag in ('true', 'false'):
+            with self.subTest(obsolete_flag=obsolete_flag):
+                settings = self.load_settings('src/env.py', VALUES, {**production, 'DEMO_ENABLED': obsolete_flag})
+                self.assertEqual(settings.ENVIRONMENT, 'production')
+                self.assertNotIn('DEMO_ENABLED', type(settings).model_fields)
 
 
 if __name__ == "__main__":

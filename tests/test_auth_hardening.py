@@ -19,7 +19,6 @@ class AuthHardeningTests(unittest.TestCase):
         self.verify = Mock(return_value=False)
         with patch.dict(sys.modules, {
             'src.db': NS(prisma=NS(user=self.users)),
-            'src.env': NS(env=NS(DEMO_ENABLED=False)),
             'src.utils.password': NS(hash_password=self.hash, verify_password=self.verify,
                                       DUMMY_PASSWORD_HASH='dummy-hash', MAX_PASSWORD_BYTES=72),
             'src.utils.jwt': NS(create_access_token=Mock(return_value='session-token')),

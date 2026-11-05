@@ -3,11 +3,13 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 from generated.prisma.errors import UniqueViolationError
 from src.db import prisma
-from src.env import env
 from src.utils.password import DUMMY_PASSWORD_HASH, MAX_PASSWORD_BYTES, hash_password, verify_password
 from src.utils.jwt import create_access_token
 from secrets import token_urlsafe
+from typing import Final
 
+
+DEMO_ENABLED: Final[bool] = True
 
 # A fixed identity keeps demo access separate from all registered accounts.
 DEMO_USER_ID = "f64a43a4-3712-4eab-9a52-4ea4c63cbe15"
@@ -48,7 +50,7 @@ class RegisterResponse(BaseModel):
 
 @router.post("/demo")
 async def demo_login():
-    if not env.DEMO_ENABLED:
+    if not DEMO_ENABLED:
         raise HTTPException(status_code=404, detail="Demo access is disabled")
     user = await prisma.user.find_unique(where={"id": DEMO_USER_ID})
     if user is None:
