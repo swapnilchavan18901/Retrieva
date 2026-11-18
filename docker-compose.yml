@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: retrieva
+      POSTGRES_USER: retrieva
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U retrieva -d retrieva"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-retrieva}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.3
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  api:
+    image: 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retrieva:latest
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: postgresql://retrieva:${POSTGRES_PASSWORD}@postgres:5432/retrieva
+      DIRECT_URL: postgresql://retrieva:${POSTGRES_PASSWORD}@postgres:5432/retrieva
+      RABBIT_MQ_URL: amqp://${RABBITMQ_USER:-retrieva}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      QDRANT_DB_CLUSTER_URL: http://qdrant:6333
+      QDRANT_DB_API_KEY: ""
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+  worker:
+    image: 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retrieva:latest
+    command: ["python", "-m", "consumer.consumer"]
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: postgresql://retrieva:${POSTGRES_PASSWORD}@postgres:5432/retrieva
+      DIRECT_URL: postgresql://retrieva:${POSTGRES_PASSWORD}@postgres:5432/retrieva
+      RABBIT_MQ_URL: amqp://${RABBITMQ_USER:-retrieva}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      QDRANT_DB_CLUSTER_URL: http://qdrant:6333
+      QDRANT_DB_API_KEY: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  qdrant_data:

@@ -220,6 +220,60 @@ migration completes. Migration does not run automatically during startup.
 
 ## Getting Started
 
+### Docker Compose deployment
+
+The `Retrieva/docker-compose.yml` file pulls the backend image from ECR and runs the
+API, consumer worker, PostgreSQL, RabbitMQ, and Qdrant. Run the Next.js dashboard
+separately with Node.js and pnpm. On the server, keep the populated
+`Retrieva/.env` there only:
+
+```bash
+cd Retrieva
+cp .env.example .env
+nano .env
+chmod 600 .env
+```
+
+Set strong database and RabbitMQ passwords, AWS S3 credentials, JWT secret,
+Sarvam key, and OpenRouter key in `.env`. For production
+keep `ENVIRONMENT=production` and set `CORS_ORIGINS` and `SOCKET_CORS_ORIGINS`
+to the public HTTPS origins. Compose supplies internal database, RabbitMQ, and
+Qdrant addresses to both backend containers. Set
+`NEXT_PUBLIC_API_URL=https://api.example.com` in
+`Retrieva-FE/.env.local` before building the frontend separately.
+
+Create the `retrieva` ECR repository once. From your development machine, run
+these commands from the `Retrieva/` directory to build and push the image:
+
+```bash
+aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 905418072258.dkr.ecr.ap-south-1.amazonaws.com
+docker build -t retriva .
+docker tag retriva:latest 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retrieva:latest
+docker push 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retrieva:latest
+```
+
+On the server, place `docker-compose.yml` and `.env.example` in the `Retrieva/`
+backend directory, give Docker permission to pull from ECR (an EC2 instance role
+is recommended), and run Compose from that directory:
+
+```bash
+cd Retrieva
+cp .env.example .env
+nano .env
+chmod 600 .env
+docker compose pull
+docker compose up -d
+docker compose run --rm api prisma db push
+docker compose ps
+```
+
+The API is exposed on port 8000 by default. Put a TLS reverse proxy/load balancer
+in front of the public API and separately hosted frontend. Persistent database,
+queue, and vector data live in named Docker volumes. Back up those volumes before
+upgrades or server maintenance. Do not put AWS credentials or application secrets
+in Docker build arguments or image layers; use an EC2 instance role for ECR pulls
+and S3 access where possible.
+
 ```bash
 # 1. Backend (Producer API)
 cd Retrieva && pip install -r requirements.txt
