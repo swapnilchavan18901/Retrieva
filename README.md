@@ -248,8 +248,8 @@ these commands from the `Retrieva/` directory to build and push the image:
 ```bash
 aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 905418072258.dkr.ecr.ap-south-1.amazonaws.com
 docker build -t retriva .
-docker tag retriva:latest 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retrieva:latest
-docker push 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retrieva:latest
+docker tag retriva:latest 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retriva:latest
+docker push 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retriva:latest
 ```
 
 On the server, place `docker-compose.yml` and `.env.example` in the `Retrieva/`

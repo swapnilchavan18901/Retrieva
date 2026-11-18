@@ -35,7 +35,7 @@ services:
       - qdrant_data:/qdrant/storage
 
   api:
-    image: 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retrieva:latest
+    image: 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retriva:latest
     restart: unless-stopped
     env_file:
       - ./.env
@@ -56,7 +56,7 @@ services:
         condition: service_started
 
   worker:
-    image: 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retrieva:latest
+    image: 905418072258.dkr.ecr.ap-south-1.amazonaws.com/retriva:latest
     command: ["python", "-m", "consumer.consumer"]
     restart: unless-stopped
     env_file:
