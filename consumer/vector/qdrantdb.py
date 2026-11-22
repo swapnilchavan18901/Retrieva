@@ -1,9 +1,8 @@
 from qdrant_client import QdrantClient
-import os
 from consumer.consumer_env import env
 
 qdrant_client = QdrantClient(
-    url=env.QDRANT_DB_CLUSTER_URL, 
+    url=env.QDRANT_DB_CLUSTER_URL,
     api_key=env.QDRANT_DB_API_KEY,
     timeout=120,  # 2 minutes timeout for large batch operations
 )

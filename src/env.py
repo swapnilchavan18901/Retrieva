@@ -15,7 +15,7 @@ class Env(ServiceSettings):
     MAX_DOCUMENTS_PER_BOT: int = Field(default=50, ge=1)
     MAX_API_KEYS_PER_BOT: int = Field(default=10, ge=1)
     CORS_ORIGINS: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
-    SOCKET_CORS_ORIGINS: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
+    SOCKET_CORS_ORIGINS: list[str] = Field(default_factory=list)
     SARVAM_API_KEY: str
     SARVAM_BASE_URL: str = "https://api.sarvam.ai/v2"
     SARVAM_MODEL: str = "sarvam-105b"
@@ -24,6 +24,8 @@ class Env(ServiceSettings):
 
     @model_validator(mode="after")
     def validate_production_settings(self):
+        if not self.SOCKET_CORS_ORIGINS:
+            self.SOCKET_CORS_ORIGINS = self.CORS_ORIGINS.copy()
         if self.ENVIRONMENT == "production":
             if len(self.JWT_SECRET) < 32 or "replace-with" in self.JWT_SECRET.lower():
                 raise ValueError("Production requires a random JWT_SECRET of at least 32 characters")

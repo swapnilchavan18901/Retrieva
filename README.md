@@ -159,12 +159,14 @@ DATABASE_URL=postgresql://...          DIRECT_URL=postgresql://...
 JWT_SECRET=your-jwt-secret             ACCESS_TOKEN_EXPIRE_MINUTES=1440
 AWS_REGION=us-east-1                   AWS_S3_BUCKET=your-bucket
 AWS_ACCESS_KEY_ID=...                  AWS_SECRET_ACCESS_KEY=...
-RABBIT_MQ_URL=amqp://...              RABBIT_MQ_API_KEY=...
+RABBIT_MQ_URL=amqps://username:password@host:5671/vhost
+RABBIT_MQ_API_KEY=...
 SARVAM_API_KEY=your-sarvam-api-key
 OPENROUTER_API_KEY=your-openrouter-api-key
 SARVAM_BASE_URL=https://api.sarvam.ai/v2
 SARVAM_MODEL=sarvam-105b
-QDRANT_DB_CLUSTER_URL=https://...      QDRANT_DB_API_KEY=...
+QDRANT_DB_CLUSTER_URL=https://your-cluster.cloud.qdrant.io:6333
+QDRANT_DB_API_KEY=...
 ```
 
 `SARVAM_API_KEY` is required by the backend for answers and query rewriting.
@@ -236,10 +238,10 @@ nano .env
 chmod 600 .env
 ```
 
-Set the hosted Supabase, RabbitMQ, and Qdrant connection settings, AWS S3
-credentials, JWT secret, Sarvam key, and OpenRouter key in `.env`. For production
-keep `ENVIRONMENT=production` and set `CORS_ORIGINS` and `SOCKET_CORS_ORIGINS`
-to the public HTTPS origins. Set
+Set the hosted Supabase and RabbitMQ URLs, Qdrant URL and API key, AWS S3
+credentials, JWT secret, Sarvam key, and OpenRouter key in `.env`. The container
+runs in production mode, and `CORS_ORIGINS` configures both HTTP and Socket.IO
+origins. Set
 `NEXT_PUBLIC_API_URL=https://api.example.com` in
 `Retrieva-FE/.env.local` before building the frontend separately.
 
