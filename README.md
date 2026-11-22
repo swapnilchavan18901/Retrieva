@@ -222,8 +222,10 @@ migration completes. Migration does not run automatically during startup.
 
 ### Docker Compose deployment
 
-The `Retrieva/docker-compose.yml` file pulls the backend image from ECR and runs the
-API, consumer worker, PostgreSQL, RabbitMQ, and Qdrant. Run the Next.js dashboard
+The `Retrieva/docker-compose.yml` file pulls the backend image from ECR and runs
+only the API. PostgreSQL, RabbitMQ, and Qdrant are hosted services configured in
+the server `.env`. The worker is separate and is not deployed by this Compose
+file. Run the Next.js dashboard
 separately with Node.js and pnpm. On the server, keep the populated
 `Retrieva/.env` there only:
 
@@ -234,11 +236,10 @@ nano .env
 chmod 600 .env
 ```
 
-Set strong database and RabbitMQ passwords, AWS S3 credentials, JWT secret,
-Sarvam key, and OpenRouter key in `.env`. For production
+Set the hosted Supabase, RabbitMQ, and Qdrant connection settings, AWS S3
+credentials, JWT secret, Sarvam key, and OpenRouter key in `.env`. For production
 keep `ENVIRONMENT=production` and set `CORS_ORIGINS` and `SOCKET_CORS_ORIGINS`
-to the public HTTPS origins. Compose supplies internal database, RabbitMQ, and
-Qdrant addresses to both backend containers. Set
+to the public HTTPS origins. Set
 `NEXT_PUBLIC_API_URL=https://api.example.com` in
 `Retrieva-FE/.env.local` before building the frontend separately.
 
